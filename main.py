@@ -338,7 +338,7 @@ async def main(page: ft.Page):
         return state["entries"].setdefault(car_id or state["active_id"], [])
 
     def snack(msg):
-        page.open(ft.SnackBar(ft.Text(msg)))
+        page.show_dialog(ft.SnackBar(ft.Text(msg)))
 
     def info_row(label, ctrl):
         return ft.Row(
@@ -372,10 +372,10 @@ async def main(page: ft.Page):
         total_km_tf = ft.TextField(
             label="Пробег всего, км",
             value=num_str(existing["km_city"] + existing["km_hw"]) if existing else "",
-            keyboard_type=ft.KeyboardType.NUMBER)
+            keyboard_type=ft.KeyboardType.NUMBER, expand=True)
         kmh_tf = ft.TextField(label="Пробег по трассе, км",
                               value=num_str(existing["km_hw"]) if existing else "",
-                              keyboard_type=ft.KeyboardType.NUMBER)
+                              keyboard_type=ft.KeyboardType.NUMBER, expand=True)
         res_city_km = ft.Text(size=18, weight=ft.FontWeight.W_600)
         res_hw_km = ft.Text(size=18, weight=ft.FontWeight.W_600)
         breakdown_card = ft.Container(
@@ -393,10 +393,10 @@ async def main(page: ft.Page):
             ]))
         idle_tf = ft.TextField(label="Стоянка с двигателем, ч",
                                value=num_str(existing["idle"]) if existing else "",
-                               keyboard_type=ft.KeyboardType.NUMBER)
+                               keyboard_type=ft.KeyboardType.NUMBER, expand=True)
         work_tf = ft.TextField(label="Общее рабочее время, ч",
                                value=num_str(existing.get("work_hours", 0)) if existing else "",
-                               keyboard_type=ft.KeyboardType.NUMBER)
+                               keyboard_type=ft.KeyboardType.NUMBER, expand=True)
         iss_tf = ft.TextField(label="Выдано топлива, л",
                               value=num_str(existing["issued"]) if existing else "",
                               keyboard_type=ft.KeyboardType.NUMBER)
@@ -435,7 +435,7 @@ async def main(page: ft.Page):
             state["selected_date"] = d.isoformat()
             render()
 
-        date_tf.on_change = on_date
+        date_tf.on_blur = on_date
 
         async def save(*_):
             try:
@@ -475,17 +475,17 @@ async def main(page: ft.Page):
 
         def ask_delete(*_):
             async def confirm(e):
-                page.close(dlg)
+                page.pop_dialog()
                 await do_delete()
             dlg = ft.AlertDialog(
                 title=ft.Text("Удалить запись?"),
                 content=ft.Text("Данные за " + fmt_date_ru(iso) + " будут удалены."),
                 actions=[
-                    ft.TextButton("Отмена", on_click=lambda e: page.close(dlg)),
+                    ft.TextButton("Отмена", on_click=lambda e: page.pop_dialog()),
                     ft.TextButton("Удалить", on_click=confirm),
                 ],
             )
-            page.open(dlg)
+            page.show_dialog(dlg)
 
         buttons = [ft.Button(content="Сохранить", icon=ft.Icons.SAVE, on_click=save, expand=True)]
         if existing:
@@ -503,9 +503,9 @@ async def main(page: ft.Page):
         recalc()
         return ft.ListView(
             controls=[date_tf, odo_tf,
-                      ft.Row([total_km_tf, kmh_tf]),
+                      ft.Row([total_km_tf, kmh_tf], spacing=10),
                       breakdown_card,
-                      ft.Row([work_tf, idle_tf]),
+                      ft.Row([work_tf, idle_tf], spacing=10),
                       iss_tf,
                       result_card,
                       ft.Row(buttons)],
@@ -533,17 +533,17 @@ async def main(page: ft.Page):
 
         def ask_del(e, del_iso):
             async def confirm(ev):
-                page.close(dlg)
+                page.pop_dialog()
                 await del_entry_for(del_iso)
             dlg = ft.AlertDialog(
                 title=ft.Text("Удалить запись?"),
                 content=ft.Text("Данные за " + fmt_date_ru(del_iso) + " будут удалены."),
                 actions=[
-                    ft.TextButton("Отмена", on_click=lambda ev: page.close(dlg)),
+                    ft.TextButton("Отмена", on_click=lambda ev: page.pop_dialog()),
                     ft.TextButton("Удалить", on_click=confirm),
                 ],
             )
-            page.open(dlg)
+            page.show_dialog(dlg)
 
         def open_day(e, open_iso):
             state["selected_date"] = open_iso
@@ -674,7 +674,7 @@ async def main(page: ft.Page):
             else:
                 car.update(c)
             await save_all()
-            page.close(dlg)
+            page.pop_dialog()
             render()
 
         async def remove(e):
@@ -685,11 +685,11 @@ async def main(page: ft.Page):
             state["entries"].pop(c["id"], None)
             state["active_id"] = state["cars"][0]["id"]
             await save_all()
-            page.close(dlg)
+            page.pop_dialog()
             render()
 
         actions = [
-            ft.TextButton("Отмена", on_click=lambda e: page.close(dlg)),
+            ft.TextButton("Отмена", on_click=lambda e: page.pop_dialog()),
             ft.Button(content="Сохранить", on_click=save),
         ]
         if not is_new:
@@ -705,13 +705,13 @@ async def main(page: ft.Page):
             actions=actions,
             actions_alignment=ft.MainAxisAlignment.END,
         )
-        page.open(dlg)
+        page.show_dialog(dlg)
 
     def open_garage(*_):
         async def select(cid, dlg):
             state["active_id"] = cid
             await save_all()
-            page.close(dlg)
+            page.pop_dialog()
             render()
 
         async def add(e):
@@ -720,7 +720,7 @@ async def main(page: ft.Page):
             state["cars"].append(c)
             state["active_id"] = c["id"]
             await save_all()
-            page.close(dlg)
+            page.pop_dialog()
             render()
             open_car_dialog(active_car())
 
@@ -756,7 +756,7 @@ async def main(page: ft.Page):
                 ft.Button(content="Добавить и настроить", icon=ft.Icons.ADD, on_click=add),
             ], height=470, width=340, scroll=ft.ScrollMode.AUTO, spacing=10),
         )
-        page.open(dlg)
+        page.show_dialog(dlg)
 
     # ---------- каркас ----------
 
