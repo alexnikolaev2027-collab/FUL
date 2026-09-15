@@ -487,7 +487,7 @@ async def main(page: ft.Page):
             )
             page.open(dlg)
 
-        buttons = [ft.ElevatedButton("Сохранить", icon=ft.Icons.SAVE, on_click=save, expand=True)]
+        buttons = [ft.Button(content="Сохранить", icon=ft.Icons.SAVE, on_click=save, expand=True)]
         if existing:
             buttons.append(ft.OutlinedButton("Удалить", icon=ft.Icons.DELETE_OUTLINE, on_click=ask_delete))
 
@@ -632,8 +632,8 @@ async def main(page: ft.Page):
                 info_row("Нормы (город/трасса/стоянка)",
                          num_str(car["norm_city"]) + " / " + num_str(car["norm_hw"]) + " / " + num_str(car["norm_idle"])),
             ], spacing=6))))
-        lv.controls.append(ft.ElevatedButton("Экспорт в Excel", icon=ft.Icons.DOWNLOAD,
-                                             on_click=export_click))
+        lv.controls.append(ft.Button(content="Экспорт в Excel", icon=ft.Icons.DOWNLOAD,
+                                     on_click=export_click))
         lv.controls.append(ft.OutlinedButton("Параметры авто", icon=ft.Icons.SETTINGS,
                                              on_click=lambda e: open_car_dialog(active_car())))
         return lv
@@ -690,7 +690,7 @@ async def main(page: ft.Page):
 
         actions = [
             ft.TextButton("Отмена", on_click=lambda e: page.close(dlg)),
-            ft.ElevatedButton("Сохранить", on_click=save),
+            ft.Button(content="Сохранить", on_click=save),
         ]
         if not is_new:
             actions.append(ft.TextButton("Удалить авто", on_click=remove))
@@ -753,7 +753,7 @@ async def main(page: ft.Page):
                 ft.Text("Добавить автомобиль", weight=ft.FontWeight.W_500),
                 name_new,
                 plate_new,
-                ft.ElevatedButton("Добавить и настроить", icon=ft.Icons.ADD, on_click=add),
+                ft.Button(content="Добавить и настроить", icon=ft.Icons.ADD, on_click=add),
             ], height=470, width=340, scroll=ft.ScrollMode.AUTO, spacing=10),
         )
         page.open(dlg)
