@@ -88,6 +88,7 @@ def month_rows(car, entries, year, month):
             "day": day,
             "odo": e["odo"] if (e and e["odo"] > 0) else "",
             "idle": e["idle"] if e else 0.0,
+            "work_hours": e.get("work_hours", 0.0) if e else 0.0,
             "km_city": e["km_city"] if e else 0.0,
             "km_hw": e["km_hw"] if e else 0.0,
             "balance": bal,
@@ -101,6 +102,7 @@ def month_rows(car, entries, year, month):
         "km_city": sum(r["km_city"] for r in rows),
         "km_hw": sum(r["km_hw"] for r in rows),
         "idle": sum(r["idle"] for r in rows),
+        "work_hours": sum(r["work_hours"] for r in rows),
         "city_l": sum(r["city_l"] for r in rows),
         "hw_l": sum(r["hw_l"] for r in rows),
         "idle_l": sum(r["idle_l"] for r in rows),
@@ -121,7 +123,8 @@ def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
     thin = Side(style="thin")
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
     center = Alignment(wrap_text=True, vertical="center", horizontal="center")
-ws.merge_cells("A1:C1")
+
+    ws.merge_cells("A1:C1")
     ws["A1"] = "Сведения на начало месяца"
     ws.merge_cells("F1:H1")
     ws["F1"] = "Нормы расхода"
@@ -172,7 +175,8 @@ ws.merge_cells("A1:C1")
     ws["A8"].font = bold
 
     headers = [
-        "Дата", "Спидометр на конец смены, км", "Стоянка с двигателем, ч",
+        "Дата", "Спидометр на конец смены, км", "Общее рабочее время, ч",
+        "Стоянка с двигателем, ч",
         "Пробег всего, км", "в городе, км", "за городом, км",
         "Остаток топлива в баке, л", "Выдано топлива, л",
         "Расход всего, л", "расход в городе, л", "расход за городом, л",
@@ -193,6 +197,7 @@ ws.merge_cells("A1:C1")
         values = [
             row["day"],
             row["odo"] if row["odo"] != "" else None,
+            row["work_hours"],
             row["idle"],
             km_day,
             row["km_city"],
@@ -214,6 +219,7 @@ ws.merge_cells("A1:C1")
     r += 1
     total_values = [
         "Итого", "",
+        round(totals["work_hours"], 2),
         round(totals["idle"], 2),
         round(totals["km_city"] + totals["km_hw"], 2),
         round(totals["km_city"], 2),
@@ -231,7 +237,7 @@ ws.merge_cells("A1:C1")
         cell.border = box
         cell.font = bold
 
-    widths = [6, 12, 10, 10, 10, 10, 12, 10, 10, 11, 11, 11, 11, 12]
+    widths = [6, 12, 10, 10, 10, 10, 10, 12, 10, 10, 11, 11, 11, 11, 12]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -239,6 +245,8 @@ ws.merge_cells("A1:C1")
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
 # ---------- совместимость хранилища между версиями Flet ----------
 # В Flet 1.0 page.client_storage переименован в page.shared_preferences
 # и стал асинхронным (await page.shared_preferences.get/set).
@@ -352,7 +360,7 @@ async def main(page: ft.Page):
         odo_tf = ft.TextField(label="Спидометр на конец смены, км",
                               value=num_str(existing["odo"]) if existing else "",
                               keyboard_type=ft.KeyboardType.NUMBER)
-total_km_tf = ft.TextField(
+        total_km_tf = ft.TextField(
             label="Пробег всего, км",
             value=num_str(existing["km_city"] + existing["km_hw"]) if existing else "",
             keyboard_type=ft.KeyboardType.NUMBER)
@@ -376,6 +384,9 @@ total_km_tf = ft.TextField(
             ]))
         idle_tf = ft.TextField(label="Стоянка с двигателем, ч",
                                value=num_str(existing["idle"]) if existing else "",
+                               keyboard_type=ft.KeyboardType.NUMBER)
+        work_tf = ft.TextField(label="Общее рабочее время, ч",
+                               value=num_str(existing.get("work_hours", 0)) if existing else "",
                                keyboard_type=ft.KeyboardType.NUMBER)
         iss_tf = ft.TextField(label="Выдано топлива, л",
                               value=num_str(existing["issued"]) if existing else "",
@@ -403,7 +414,7 @@ total_km_tf = ft.TextField(
             res_range.value = fmt_num(rng, 0) + " км"
             page.update()
 
-        for tf in (odo_tf, total_km_tf, kmh_tf, idle_tf, iss_tf):
+        for tf in (odo_tf, total_km_tf, kmh_tf, idle_tf, work_tf, iss_tf):
             tf.on_change = recalc
 
         def on_date(*_):
@@ -431,10 +442,11 @@ total_km_tf = ft.TextField(
                 "km_city": max(total_km - hw_km, 0.0),
                 "km_hw": hw_km,
                 "idle": to_float(idle_tf.value),
+                "work_hours": to_float(work_tf.value),
                 "issued": to_float(iss_tf.value),
             }
             lst = car_entries()
-for i, e in enumerate(lst):
+            for i, e in enumerate(lst):
                 if e["date"] == ent["date"]:
                     lst[i] = ent
                     break
@@ -484,7 +496,8 @@ for i, e in enumerate(lst):
             controls=[date_tf, odo_tf,
                       ft.Row([total_km_tf, kmh_tf]),
                       breakdown_card,
-                      ft.Row([idle_tf, iss_tf]),
+                      ft.Row([work_tf, idle_tf]),
+                      iss_tf,
                       result_card,
                       ft.Row(buttons)],
             expand=True, spacing=10, padding=ft.padding.all(12))
@@ -534,7 +547,7 @@ for i, e in enumerate(lst):
             ft.Text(MONTHS_RU[m - 1] + " " + str(y), size=17,
                     weight=ft.FontWeight.W_500, expand=True, text_align=ft.TextAlign.CENTER),
             ft.IconButton(ft.Icons.CHEVRON_RIGHT, on_click=lambda e: shift(1)),
-]))
+        ]))
         if not working:
             lv.controls.append(ft.Container(
                 padding=40,
@@ -609,7 +622,7 @@ for i, e in enumerate(lst):
                 info_row("На начало месяца", fmt_num(start_bal) + " л · " + fmt_num(start_odo, 0) + " км"),
                 info_row("Нормы (город/трасса/стоянка)",
                          num_str(car["norm_city"]) + " / " + num_str(car["norm_hw"]) + " / " + num_str(car["norm_idle"])),
-], spacing=6))))
+            ], spacing=6))))
         lv.controls.append(ft.ElevatedButton("Экспорт в Excel", icon=ft.Icons.DOWNLOAD,
                                              on_click=export_click))
         lv.controls.append(ft.OutlinedButton("Параметры авто", icon=ft.Icons.SETTINGS,
@@ -701,7 +714,8 @@ for i, e in enumerate(lst):
             page.close(dlg)
             render()
             open_car_dialog(active_car())
-lv = ft.ListView(spacing=8, height=190)
+
+        lv = ft.ListView(spacing=8, height=190)
         for c in state["cars"]:
             selected = c["id"] == state["active_id"]
             lv.controls.append(ft.Container(
