@@ -380,7 +380,7 @@ async def main(page: ft.Page):
         res_hw_km = ft.Text(size=18, weight=ft.FontWeight.W_600)
         breakdown_card = ft.Container(
             padding=12,
-            border=ft.border.all(1, ft.Colors.OUTLINE_VARIANT),
+            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
             border_radius=10,
             content=ft.Row([
                 ft.Column(
@@ -509,7 +509,7 @@ async def main(page: ft.Page):
                       iss_tf,
                       result_card,
                       ft.Row(buttons)],
-            expand=True, spacing=10, padding=ft.padding.all(12))
+            expand=True, spacing=10, padding=ft.Padding.all(12))
 
     # ---------- экран 2: месяц ----------
 
@@ -550,7 +550,7 @@ async def main(page: ft.Page):
             state["tab"] = 0
             render()
 
-        lv = ft.ListView(expand=True, spacing=8, padding=ft.padding.all(12))
+        lv = ft.ListView(expand=True, spacing=8, padding=ft.Padding.all(12))
         lv.controls.append(ft.Row([
             ft.IconButton(ft.Icons.CHEVRON_LEFT, on_click=lambda e: shift(-1)),
             ft.Text(MONTHS_RU[m - 1] + " " + str(y), size=17,
@@ -569,7 +569,7 @@ async def main(page: ft.Page):
                 fmt_num(r["issued"]),
                 fmt_num(r["idle"]))
             lv.controls.append(ft.Container(
-                border=ft.border.all(1, ft.Colors.OUTLINE_VARIANT),
+                border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
                 border_radius=10,
                 content=ft.ListTile(
                     title=ft.Text(str(r["day"]) + " " + MONTHS_GEN[m - 1], size=14),
@@ -610,7 +610,7 @@ async def main(page: ft.Page):
                     snack("Ошибка сохранения: " + str(ex))
             page.update()
 
-        lv = ft.ListView(expand=True, spacing=10, padding=ft.padding.all(12))
+        lv = ft.ListView(expand=True, spacing=10, padding=ft.Padding.all(12))
         lv.controls.append(ft.Text(MONTHS_RU[m - 1] + " " + str(y), size=17,
                                    weight=ft.FontWeight.W_500))
         lv.controls.append(ft.Row([
@@ -728,7 +728,7 @@ async def main(page: ft.Page):
         for c in state["cars"]:
             selected = c["id"] == state["active_id"]
             lv.controls.append(ft.Container(
-                border=ft.border.all(1, ft.Colors.OUTLINE_VARIANT),
+                border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
                 border_radius=10,
                 bgcolor=ft.Colors.SECONDARY_CONTAINER if selected else None,
                 content=ft.ListTile(
