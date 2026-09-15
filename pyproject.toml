@@ -1,0 +1,12 @@
+[project]
+name = "fuel-app"
+version = "1.0.0"
+description = "Учёт топлива: гараж, смены, сводка, экспорт в Excel"
+dependencies = [
+    "flet",
+    "openpyxl",
+]
+
+[tool.flet]
+org = "ru.fuelapp"
+product = "Учёт топлива"
