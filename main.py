@@ -1,6 +1,7 @@
 import datetime
 import io
 import json
+import os
 
 import flet as ft
 from openpyxl import Workbook
@@ -247,24 +248,32 @@ def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
     return buf.getvalue()
 
 
-# ---------- совместимость хранилища между версиями Flet ----------
-# В Flet 1.0 page.client_storage переименован в page.shared_preferences
-# и стал асинхронным (await page.shared_preferences.get/set).
-# На старых версиях Flet используем page.client_storage напрямую.
+# ---------- хранилище данных ----------
+# page.client_storage / page.shared_preferences ненадёжны между версиями
+# Flet и платформами сборки (в частности, в мобильных сборках через
+# serious_python их может не быть вовсе). Вместо этого пишем обычный
+# JSON-файл в постоянную папку приложения FLET_APP_STORAGE_DATA — эта
+# переменная окружения официально предоставляется Flet на всех
+# платформах (Android/iOS/desktop/web) и гарантированно доступна.
 
-async def storage_get(page, key):
-    prefs = getattr(page, "shared_preferences", None)
-    if prefs is not None:
-        return await prefs.get(key)
-    return page.client_storage.get(key)
+APP_DATA_DIR = os.getenv("FLET_APP_STORAGE_DATA") or "."
+DATA_FILE_PATH = os.path.join(APP_DATA_DIR, STORE_KEY + ".json")
 
 
-async def storage_set(page, key, value):
-    prefs = getattr(page, "shared_preferences", None)
-    if prefs is not None:
-        await prefs.set(key, value)
-    else:
-        page.client_storage.set(key, value)
+def storage_get():
+    if not os.path.exists(DATA_FILE_PATH):
+        return None
+    try:
+        with open(DATA_FILE_PATH, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return None
+
+
+def storage_set(value):
+    os.makedirs(APP_DATA_DIR, exist_ok=True)
+    with open(DATA_FILE_PATH, "w", encoding="utf-8") as f:
+        f.write(value)
 
 
 async def main(page: ft.Page):
@@ -303,12 +312,12 @@ async def main(page: ft.Page):
         }
 
     async def save_all():
-        await storage_set(page, STORE_KEY, json.dumps(
+        storage_set(json.dumps(
             {"cars": state["cars"], "active_id": state["active_id"], "entries": state["entries"]},
             ensure_ascii=False))
 
     async def load_all():
-        raw = await storage_get(page, STORE_KEY)
+        raw = storage_get()
         data = json.loads(raw) if raw else {}
         state["cars"] = data.get("cars", [])
         state["active_id"] = data.get("active_id")
@@ -706,8 +715,8 @@ async def main(page: ft.Page):
             render()
 
         async def add(e):
-            c = new_car(name_new.value.strip() or "Новое авто")
-            c["plate"] = plate_new.value.strip()
+            c = new_car((name_new.value or "").strip() or "Новое авто")
+            c["plate"] = (plate_new.value or "").strip()
             state["cars"].append(c)
             state["active_id"] = c["id"]
             await save_all()
