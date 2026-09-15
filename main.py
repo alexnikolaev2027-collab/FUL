@@ -96,6 +96,7 @@ def month_rows(car, entries, year, month):
             "issued": issued,
             "city_l": city_l, "hw_l": hw_l, "idle_l": idle_l, "total_l": total_l,
             "km_sum": km_sum,
+            "note": e.get("note", "") if e else "",
             "empty": e is None,
         })
     totals = {
@@ -171,7 +172,7 @@ def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
     for addr in ("F5", "G5", "H5", "A6", "C6", "J6", "K6", "N5", "O5", "P5", "Q5", "R5"):
         ws[addr].border = box
 
-    ws.merge_cells("A8:N8")
+    ws.merge_cells("A8:P8")
     ws["A8"] = "Накопительные данные за текущий месяц"
     ws["A8"].font = bold
 
@@ -182,6 +183,7 @@ def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
         "Остаток топлива в баке, л", "Выдано топлива, л",
         "Расход всего, л", "расход в городе, л", "расход за городом, л",
         "расход на стоянке, л", "Сумма пробега, км", "Свободное место в баке, л",
+        "Заметка",
     ]
     header_row = 9
     for col, text in enumerate(headers, start=1):
@@ -211,6 +213,7 @@ def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
             round(row["idle_l"], 2),
             round(row["km_sum"], 2),
             round(car["tank"] - row["balance"], 2),
+            row["note"],
         ]
         for col, v in enumerate(values, start=1):
             cell = ws.cell(row=r, column=col, value=v)
@@ -232,13 +235,14 @@ def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
         round(totals["hw_l"], 2),
         round(totals["idle_l"], 2),
         "", "",
+        "",
     ]
     for col, v in enumerate(total_values, start=1):
         cell = ws.cell(row=r, column=col, value=v)
         cell.border = box
         cell.font = bold
 
-    widths = [6, 12, 10, 10, 10, 10, 10, 12, 10, 10, 11, 11, 11, 11, 12]
+    widths = [6, 12, 10, 10, 10, 10, 10, 12, 10, 10, 11, 11, 11, 11, 12, 30]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -249,12 +253,6 @@ def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
 
 
 # ---------- хранилище данных ----------
-# page.client_storage / page.shared_preferences ненадёжны между версиями
-# Flet и платформами сборки (в частности, в мобильных сборках через
-# serious_python их может не быть вовсе). Вместо этого пишем обычный
-# JSON-файл в постоянную папку приложения FLET_APP_STORAGE_DATA — эта
-# переменная окружения официально предоставляется Flet на всех
-# платформах (Android/iOS/desktop/web) и гарантированно доступна.
 
 APP_DATA_DIR = os.getenv("FLET_APP_STORAGE_DATA") or "."
 DATA_FILE_PATH = os.path.join(APP_DATA_DIR, STORE_KEY + ".json")
@@ -280,8 +278,6 @@ async def main(page: ft.Page):
     page.title = "Учёт топлива"
     page.theme_mode = ft.ThemeMode.SYSTEM
 
-    # FilePicker в Flet 1.0 работает как сервис с асинхронными методами
-    # (save_file_async вместо колбэка on_result).
     file_picker = ft.FilePicker()
     if hasattr(page, "services"):
         page.services.append(file_picker)
@@ -400,6 +396,9 @@ async def main(page: ft.Page):
         iss_tf = ft.TextField(label="Выдано топлива, л",
                               value=num_str(existing["issued"]) if existing else "",
                               keyboard_type=ft.KeyboardType.NUMBER)
+        note_tf = ft.TextField(label="Заметка (куда ездил и т.д.)",
+                               value=existing.get("note", "") if existing else "",
+                               multiline=True, min_lines=2, max_lines=4)
 
         res_total = ft.Text(weight=ft.FontWeight.W_500, size=14)
         res_bal = ft.Text(weight=ft.FontWeight.W_500, size=14)
@@ -453,6 +452,7 @@ async def main(page: ft.Page):
                 "idle": to_float(idle_tf.value),
                 "work_hours": to_float(work_tf.value),
                 "issued": to_float(iss_tf.value),
+                "note": note_tf.value.strip(),
             }
             lst = car_entries()
             for i, e in enumerate(lst):
@@ -487,7 +487,7 @@ async def main(page: ft.Page):
             )
             page.show_dialog(dlg)
 
-        buttons = [ft.Button(content="Сохранить", icon=ft.Icons.SAVE, on_click=save, expand=True)]
+        buttons = [ft.Button("Сохранить", icon=ft.Icons.SAVE, on_click=save, expand=True)]
         if existing:
             buttons.append(ft.OutlinedButton("Удалить", icon=ft.Icons.DELETE_OUTLINE, on_click=ask_delete))
 
@@ -507,6 +507,7 @@ async def main(page: ft.Page):
                       breakdown_card,
                       ft.Row([work_tf, idle_tf], spacing=10),
                       iss_tf,
+                      note_tf,
                       result_card,
                       ft.Row(buttons)],
             expand=True, spacing=10, padding=ft.Padding.all(12))
@@ -568,6 +569,8 @@ async def main(page: ft.Page):
                 fmt_num(r["km_city"] + r["km_hw"], 0),
                 fmt_num(r["issued"]),
                 fmt_num(r["idle"]))
+            if r["note"]:
+                sub += "\n" + r["note"]
             lv.controls.append(ft.Container(
                 border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
                 border_radius=10,
@@ -599,7 +602,6 @@ async def main(page: ft.Page):
                 path = await file_picker.save_file_async(
                     file_name=fname, allowed_extensions=["xlsx"])
             except AttributeError:
-                # Совместимость со старым (не-async) FilePicker API
                 path = file_picker.save_file(file_name=fname, allowed_extensions=["xlsx"])
             if path:
                 try:
@@ -632,7 +634,7 @@ async def main(page: ft.Page):
                 info_row("Нормы (город/трасса/стоянка)",
                          num_str(car["norm_city"]) + " / " + num_str(car["norm_hw"]) + " / " + num_str(car["norm_idle"])),
             ], spacing=6))))
-        lv.controls.append(ft.Button(content="Экспорт в Excel", icon=ft.Icons.DOWNLOAD,
+        lv.controls.append(ft.Button("Экспорт в Excel", icon=ft.Icons.DOWNLOAD,
                                      on_click=export_click))
         lv.controls.append(ft.OutlinedButton("Параметры авто", icon=ft.Icons.SETTINGS,
                                              on_click=lambda e: open_car_dialog(active_car())))
@@ -690,7 +692,7 @@ async def main(page: ft.Page):
 
         actions = [
             ft.TextButton("Отмена", on_click=lambda e: page.pop_dialog()),
-            ft.Button(content="Сохранить", on_click=save),
+            ft.Button("Сохранить", on_click=save),
         ]
         if not is_new:
             actions.append(ft.TextButton("Удалить авто", on_click=remove))
@@ -701,14 +703,14 @@ async def main(page: ft.Page):
                 ft.Row([ncity_tf, nhw_tf]),
                 nidle_tf,
                 ft.Row([sodo_tf, sfuel_tf]),
-            ], height=400, width=340, scroll=ft.ScrollMode.AUTO, spacing=10),
+            ], height=320, width=340, scroll=ft.ScrollMode.AUTO, spacing=8),
             actions=actions,
             actions_alignment=ft.MainAxisAlignment.END,
         )
         page.show_dialog(dlg)
 
     def open_garage(*_):
-        async def select(cid, dlg):
+        async def select(cid):
             state["active_id"] = cid
             await save_all()
             page.pop_dialog()
@@ -738,7 +740,7 @@ async def main(page: ft.Page):
                         num_str(c["tank"]), num_str(c["norm_city"]),
                         num_str(c["norm_hw"]), num_str(c["norm_idle"])), size=12),
                     trailing=ft.Icon(ft.Icons.CHECK_CIRCLE, size=18) if selected else None,
-                    on_click=lambda e, cid=c["id"]: select(cid, dlg),
+                    on_click=lambda e, cid=c["id"]: select(cid),
                 ),
             ))
 
@@ -753,8 +755,8 @@ async def main(page: ft.Page):
                 ft.Text("Добавить автомобиль", weight=ft.FontWeight.W_500),
                 name_new,
                 plate_new,
-                ft.Button(content="Добавить и настроить", icon=ft.Icons.ADD, on_click=add),
-            ], height=470, width=340, scroll=ft.ScrollMode.AUTO, spacing=10),
+                ft.Button("Добавить и настроить", icon=ft.Icons.ADD, on_click=add),
+            ], height=420, width=340, scroll=ft.ScrollMode.AUTO, spacing=8),
         )
         page.show_dialog(dlg)
 
