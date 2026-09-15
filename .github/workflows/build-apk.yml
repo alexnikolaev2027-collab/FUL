@@ -13,9 +13,18 @@ jobs:
         with:
           channel: stable
 
-      - uses: android-actions/setup-android@v3
+      - name: Accept Android SDK licenses
+        run: |
+          SDKMANAGER=$(find /usr/local/lib/android/sdk/cmdline-tools -name sdkmanager -type f | head -n 1)
+          yes | $SDKMANAGER --licenses || true
 
-      - run: yes | sdkmanager --licenses || true
+      - name: Ensure NDK and CMake
+        run: |
+          SDKMANAGER=$(find /usr/local/lib/android/sdk/cmdline-tools -name sdkmanager -type f | head -n 1)
+          yes | $SDKMANAGER "ndk;27.0.12077973" "cmake;3.22.1" || true
+
+      - name: Flutter doctor
+        run: flutter doctor
 
       - uses: actions/setup-python@v5
         with:
