@@ -121,8 +121,7 @@ def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
     thin = Side(style="thin")
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
     center = Alignment(wrap_text=True, vertical="center", horizontal="center")
-
-    ws.merge_cells("A1:C1")
+ws.merge_cells("A1:C1")
     ws["A1"] = "Сведения на начало месяца"
     ws.merge_cells("F1:H1")
     ws["F1"] = "Нормы расхода"
@@ -240,11 +239,37 @@ def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+# ---------- совместимость хранилища между версиями Flet ----------
+# В Flet 1.0 page.client_storage переименован в page.shared_preferences
+# и стал асинхронным (await page.shared_preferences.get/set).
+# На старых версиях Flet используем page.client_storage напрямую.
+
+async def storage_get(page, key):
+    prefs = getattr(page, "shared_preferences", None)
+    if prefs is not None:
+        return await prefs.get(key)
+    return page.client_storage.get(key)
 
 
-def main(page: ft.Page):
+async def storage_set(page, key, value):
+    prefs = getattr(page, "shared_preferences", None)
+    if prefs is not None:
+        await prefs.set(key, value)
+    else:
+        page.client_storage.set(key, value)
+
+
+async def main(page: ft.Page):
     page.title = "Учёт топлива"
     page.theme_mode = ft.ThemeMode.SYSTEM
+
+    # FilePicker в Flet 1.0 работает как сервис с асинхронными методами
+    # (save_file_async вместо колбэка on_result).
+    file_picker = ft.FilePicker()
+    if hasattr(page, "services"):
+        page.services.append(file_picker)
+    else:
+        page.overlay.append(file_picker)
 
     state = {
         "cars": [],
@@ -269,13 +294,13 @@ def main(page: ft.Page):
             "start_fuel": 0.0,
         }
 
-    def save_all():
-        page.client_storage.set(STORE_KEY, json.dumps(
+    async def save_all():
+        await storage_set(page, STORE_KEY, json.dumps(
             {"cars": state["cars"], "active_id": state["active_id"], "entries": state["entries"]},
             ensure_ascii=False))
 
-    def load_all():
-        raw = page.client_storage.get(STORE_KEY)
+    async def load_all():
+        raw = await storage_get(page, STORE_KEY)
         data = json.loads(raw) if raw else {}
         state["cars"] = data.get("cars", [])
         state["active_id"] = data.get("active_id")
@@ -284,7 +309,7 @@ def main(page: ft.Page):
             car = new_car("Основное ТС")
             state["cars"] = [car]
             state["active_id"] = car["id"]
-            save_all()
+            await save_all()
 
     def active_car():
         for c in state["cars"]:
@@ -327,12 +352,28 @@ def main(page: ft.Page):
         odo_tf = ft.TextField(label="Спидометр на конец смены, км",
                               value=num_str(existing["odo"]) if existing else "",
                               keyboard_type=ft.KeyboardType.NUMBER)
-        kmc_tf = ft.TextField(label="Пробег в городе, км",
-                              value=num_str(existing["km_city"]) if existing else "",
-                              keyboard_type=ft.KeyboardType.NUMBER)
-        kmh_tf = ft.TextField(label="Пробег за городом, км",
+total_km_tf = ft.TextField(
+            label="Пробег всего, км",
+            value=num_str(existing["km_city"] + existing["km_hw"]) if existing else "",
+            keyboard_type=ft.KeyboardType.NUMBER)
+        kmh_tf = ft.TextField(label="Пробег по трассе, км",
                               value=num_str(existing["km_hw"]) if existing else "",
                               keyboard_type=ft.KeyboardType.NUMBER)
+        res_city_km = ft.Text(size=18, weight=ft.FontWeight.W_600)
+        res_hw_km = ft.Text(size=18, weight=ft.FontWeight.W_600)
+        breakdown_card = ft.Container(
+            padding=12,
+            border=ft.border.all(1, ft.Colors.OUTLINE_VARIANT),
+            border_radius=10,
+            content=ft.Row([
+                ft.Column(
+                    [ft.Text("Город", size=12, color=ft.Colors.GREY_600), res_city_km],
+                    expand=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.VerticalDivider(width=1),
+                ft.Column(
+                    [ft.Text("Трасса", size=12, color=ft.Colors.GREY_600), res_hw_km],
+                    expand=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            ]))
         idle_tf = ft.TextField(label="Стоянка с двигателем, ч",
                                value=num_str(existing["idle"]) if existing else "",
                                keyboard_type=ft.KeyboardType.NUMBER)
@@ -346,19 +387,23 @@ def main(page: ft.Page):
         res_range = ft.Text(size=14)
 
         def recalc(*_):
-            temp = {"km_city": to_float(kmc_tf.value), "km_hw": to_float(kmh_tf.value),
-                    "idle": to_float(idle_tf.value)}
+            total_km = to_float(total_km_tf.value)
+            hw_km = to_float(kmh_tf.value)
+            city_km = max(total_km - hw_km, 0.0)
+            temp = {"km_city": city_km, "km_hw": hw_km, "idle": to_float(idle_tf.value)}
             _c, _h, _i, total_l = calc_day(car, temp)
             bal = bal_before + to_float(iss_tf.value) - total_l
             free = car["tank"] - bal
             rng = free / (car["norm_city"] / 100.0) if car["norm_city"] else 0.0
+            res_city_km.value = fmt_num(city_km, 0) + " км"
+            res_hw_km.value = fmt_num(hw_km, 0) + " км"
             res_total.value = fmt_num(total_l) + " л"
             res_bal.value = fmt_num(bal) + " л"
             res_free.value = fmt_num(free) + " л"
             res_range.value = fmt_num(rng, 0) + " км"
             page.update()
 
-        for tf in (odo_tf, kmc_tf, kmh_tf, idle_tf, iss_tf):
+        for tf in (odo_tf, total_km_tf, kmh_tf, idle_tf, iss_tf):
             tf.on_change = recalc
 
         def on_date(*_):
@@ -372,43 +417,45 @@ def main(page: ft.Page):
 
         date_tf.on_change = on_date
 
-        def save(*_):
+        async def save(*_):
             try:
                 d = datetime.datetime.strptime(date_tf.value.strip(), "%d.%m.%Y").date()
             except Exception:
                 snack("Проверьте дату: формат ДД.ММ.ГГГГ")
                 return
+            total_km = to_float(total_km_tf.value)
+            hw_km = to_float(kmh_tf.value)
             ent = {
                 "date": d.isoformat(),
                 "odo": to_float(odo_tf.value),
-                "km_city": to_float(kmc_tf.value),
-                "km_hw": to_float(kmh_tf.value),
+                "km_city": max(total_km - hw_km, 0.0),
+                "km_hw": hw_km,
                 "idle": to_float(idle_tf.value),
                 "issued": to_float(iss_tf.value),
             }
             lst = car_entries()
-            for i, e in enumerate(lst):
+for i, e in enumerate(lst):
                 if e["date"] == ent["date"]:
                     lst[i] = ent
                     break
             else:
                 lst.append(ent)
             state["selected_date"] = ent["date"]
-            save_all()
+            await save_all()
             snack("Сохранено: " + fmt_date_ru(ent["date"]))
             render()
 
-        def do_delete(*_):
+        async def do_delete(*_):
             lst = car_entries()
             lst[:] = [e for e in lst if e["date"] != iso]
-            save_all()
+            await save_all()
             snack("Запись удалена")
             render()
 
         def ask_delete(*_):
-            def confirm(e):
+            async def confirm(e):
                 page.close(dlg)
-                do_delete()
+                await do_delete()
             dlg = ft.AlertDialog(
                 title=ft.Text("Удалить запись?"),
                 content=ft.Text("Данные за " + fmt_date_ru(iso) + " будут удалены."),
@@ -435,7 +482,8 @@ def main(page: ft.Page):
         recalc()
         return ft.ListView(
             controls=[date_tf, odo_tf,
-                      ft.Row([kmc_tf, kmh_tf]),
+                      ft.Row([total_km_tf, kmh_tf]),
+                      breakdown_card,
                       ft.Row([idle_tf, iss_tf]),
                       result_card,
                       ft.Row(buttons)],
@@ -455,16 +503,16 @@ def main(page: ft.Page):
             state["month"] = idx % 12 + 1
             render()
 
-        def del_entry_for(del_iso):
+        async def del_entry_for(del_iso):
             lst = car_entries()
             lst[:] = [x for x in lst if x["date"] != del_iso]
-            save_all()
+            await save_all()
             render()
 
         def ask_del(e, del_iso):
-            def confirm(ev):
+            async def confirm(ev):
                 page.close(dlg)
-                del_entry_for(del_iso)
+                await del_entry_for(del_iso)
             dlg = ft.AlertDialog(
                 title=ft.Text("Удалить запись?"),
                 content=ft.Text("Данные за " + fmt_date_ru(del_iso) + " будут удалены."),
@@ -486,7 +534,7 @@ def main(page: ft.Page):
             ft.Text(MONTHS_RU[m - 1] + " " + str(y), size=17,
                     weight=ft.FontWeight.W_500, expand=True, text_align=ft.TextAlign.CENTER),
             ft.IconButton(ft.Icons.CHEVRON_RIGHT, on_click=lambda e: shift(1)),
-        ]))
+]))
         if not working:
             lv.controls.append(ft.Container(
                 padding=40,
@@ -522,23 +570,23 @@ def main(page: ft.Page):
         rows, totals, start_bal, start_odo = month_rows(car, car_entries(), y, m)
         km_total = totals["km_city"] + totals["km_hw"]
 
-        def export_click(e):
+        async def export_click(e):
             data = build_xlsx(car, y, m, rows, totals, start_bal, start_odo)
             fname = "Топливо_%s_%d.xlsx" % (MONTHS_RU[m - 1], y)
-
-            def on_result(ev: ft.FilePickerResultEvent):
-                if ev.path:
-                    try:
-                        with open(ev.path, "wb") as fh:
-                            fh.write(data)
-                        snack("Сохранено: " + ev.path)
-                    except Exception as ex:
-                        snack("Ошибка сохранения: " + str(ex))
-                page.overlay.remove(fp)
-
-            fp = ft.FilePicker(on_result=on_result)
-            page.overlay.append(fp)
-            fp.save_file(file_name=fname, allowed_extensions=["xlsx"])
+            try:
+                path = await file_picker.save_file_async(
+                    file_name=fname, allowed_extensions=["xlsx"])
+            except AttributeError:
+                # Совместимость со старым (не-async) FilePicker API
+                path = file_picker.save_file(file_name=fname, allowed_extensions=["xlsx"])
+            if path:
+                try:
+                    with open(path, "wb") as fh:
+                        fh.write(data)
+                    snack("Сохранено: " + path)
+                except Exception as ex:
+                    snack("Ошибка сохранения: " + str(ex))
+            page.update()
 
         lv = ft.ListView(expand=True, spacing=10, padding=ft.padding.all(12))
         lv.controls.append(ft.Text(MONTHS_RU[m - 1] + " " + str(y), size=17,
@@ -561,7 +609,7 @@ def main(page: ft.Page):
                 info_row("На начало месяца", fmt_num(start_bal) + " л · " + fmt_num(start_odo, 0) + " км"),
                 info_row("Нормы (город/трасса/стоянка)",
                          num_str(car["norm_city"]) + " / " + num_str(car["norm_hw"]) + " / " + num_str(car["norm_idle"])),
-            ], spacing=6))))
+], spacing=6))))
         lv.controls.append(ft.ElevatedButton("Экспорт в Excel", icon=ft.Icons.DOWNLOAD,
                                              on_click=export_click))
         lv.controls.append(ft.OutlinedButton("Параметры авто", icon=ft.Icons.SETTINGS,
@@ -589,7 +637,7 @@ def main(page: ft.Page):
         sfuel_tf = ft.TextField(label="Топливо на старте, л", value=num_str(c["start_fuel"]),
                                 keyboard_type=ft.KeyboardType.NUMBER)
 
-        def save(e):
+        async def save(e):
             c["name"] = name_tf.value.strip() or "Авто"
             c["plate"] = plate_tf.value.strip()
             c["tank"] = to_float(tank_tf.value, 75.0)
@@ -603,18 +651,18 @@ def main(page: ft.Page):
                 state["active_id"] = c["id"]
             else:
                 car.update(c)
-            save_all()
+            await save_all()
             page.close(dlg)
             render()
 
-        def remove(e):
+        async def remove(e):
             if len(state["cars"]) <= 1:
                 snack("Нельзя удалить единственное авто")
                 return
             state["cars"] = [x for x in state["cars"] if x["id"] != c["id"]]
             state["entries"].pop(c["id"], None)
             state["active_id"] = state["cars"][0]["id"]
-            save_all()
+            await save_all()
             page.close(dlg)
             render()
 
@@ -638,23 +686,22 @@ def main(page: ft.Page):
         page.open(dlg)
 
     def open_garage(*_):
-        def select(cid, dlg):
+        async def select(cid, dlg):
             state["active_id"] = cid
-            save_all()
+            await save_all()
             page.close(dlg)
             render()
 
-        def add(e):
+        async def add(e):
             c = new_car(name_new.value.strip() or "Новое авто")
             c["plate"] = plate_new.value.strip()
             state["cars"].append(c)
             state["active_id"] = c["id"]
-            save_all()
+            await save_all()
             page.close(dlg)
             render()
             open_car_dialog(active_car())
-
-        lv = ft.ListView(spacing=8, height=190)
+lv = ft.ListView(spacing=8, height=190)
         for c in state["cars"]:
             selected = c["id"] == state["active_id"]
             lv.controls.append(ft.Container(
@@ -719,7 +766,7 @@ def main(page: ft.Page):
     )
     page.add(body)
 
-    load_all()
+    await load_all()
     render()
 
 
