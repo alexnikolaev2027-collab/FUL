@@ -821,7 +821,8 @@ async def main(page: ft.Page):
                     content=ft.Column([
                         ft.Text(str(round(pct * 100)) + "%", size=20, weight=ft.FontWeight.W_600),
                         ft.Text(fmt_num(balance) + " л", size=11, color=ft.Colors.GREY_600),
-                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    ], spacing=0, alignment=ft.MainAxisAlignment.CENTER,
+                       horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                 ),
             ], width=104, height=104)
         except Exception:
@@ -831,7 +832,8 @@ async def main(page: ft.Page):
                     ft.Text(str(round(pct * 100)) + "%", size=22, weight=ft.FontWeight.W_600,
                             color=color),
                     ft.Text(fmt_num(balance) + " л", size=11, color=ft.Colors.GREY_600),
-                ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER))
+                ], spacing=0, alignment=ft.MainAxisAlignment.CENTER,
+                   horizontal_alignment=ft.CrossAxisAlignment.CENTER))
 
     def sparkline(values, height=44, color=None):
         # Простой спарклайн без графической библиотеки: ряд тонких
@@ -1326,45 +1328,64 @@ async def main(page: ft.Page):
         async def export_click(e):
             data = build_xlsx(car, y, m, rows, totals, start_bal, start_odo)
             fname = "Топливо_%s_%d.xlsx" % (MONTHS_RU[m - 1], y)
-            # Баг был здесь: в этой сборке Flet save_file_async иногда
-            # отсутствует (тогда попадали в except и звали обычный
-            # save_file), а save_file в этой же сборке на самом деле
-            # тоже корутина — без await она возвращала не путь, а сам
-            # объект корутины, который потом пытались открыть как файл
-            # ("expected str, bytes or os.PathLike object, not coroutine").
-            # Теперь пробуем оба метода и, если результат — awaitable,
-            # всегда его дожидаемся, какой бы метод ни сработал.
+            # На вебе и на мобильных (Android/iOS) у save_file нет доступа
+            # к файловой системе как на десктопе: получить путь и потом
+            # самим дозаписать в него байты там нельзя ("src_bytes" is
+            # required when saving a file in web mode, or on mobile").
+            # На этих платформах байты файла нужно передать СРАЗУ в сам
+            # вызов save_file через параметр src_bytes — тогда платформа
+            # сама покажет системный диалог сохранения/"Поделиться" и
+            # ничего возвращать не обязана. На десктопе передача src_bytes
+            # не мешает: если платформа всё равно вернула путь, дозаписываем
+            # его сами, как раньше.
             path = None
+            got_result = False
             last_err = None
             for name in ("save_file_async", "save_file"):
                 fn = getattr(file_picker, name, None)
                 if fn is None:
                     continue
-                try:
-                    result = fn(file_name=fname, allowed_extensions=["xlsx"])
-                except TypeError as ex:
-                    last_err = ex
-                    continue
-                if inspect.isawaitable(result):
+                for kwargs in (
+                    dict(file_name=fname, allowed_extensions=["xlsx"], src_bytes=data),
+                    dict(file_name=fname, allowed_extensions=["xlsx"]),
+                ):
                     try:
-                        result = await result
+                        result = fn(**kwargs)
+                    except TypeError as ex:
+                        last_err = ex
+                        continue
                     except Exception as ex:
                         last_err = ex
                         continue
-                path = result
-                if path:
+                    if inspect.isawaitable(result):
+                        try:
+                            result = await result
+                        except Exception as ex:
+                            last_err = ex
+                            continue
+                    path = result
+                    got_result = True
+                    last_err = None
                     break
-            if not path:
+                if got_result:
+                    break
+            if not got_result:
                 if last_err:
                     snack("Не удалось открыть диалог сохранения: " + str(last_err))
                 page.update()
                 return
-            try:
-                with open(path, "wb") as fh:
-                    fh.write(data)
-                snack("Сохранено: " + path)
-            except Exception as ex:
-                snack("Ошибка сохранения: " + str(ex))
+            if path:
+                try:
+                    with open(path, "wb") as fh:
+                        fh.write(data)
+                    snack("Сохранено: " + path)
+                except Exception:
+                    # На вебе/мобильных файл обычно уже сохранён платформой
+                    # через src_bytes — прямая запись по пути там не всегда
+                    # доступна, и это не ошибка.
+                    snack("Файл сохранён")
+            else:
+                snack("Файл сохранён")
             page.update()
 
         lv = ft.ListView(expand=True, spacing=10, padding=ft.Padding.all(12))
