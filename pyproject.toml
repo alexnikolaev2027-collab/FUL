@@ -10,3 +10,6 @@ dependencies = [
 [tool.flet]
 org = "ru.fuelapp"
 product = "Учёт топлива"
+
+[tool.flet.android]
+adaptive_icon_background = "#3a1810"
