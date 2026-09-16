@@ -576,7 +576,7 @@ async def main(page: ft.Page):
                 ft.ProgressRing(value=pct, width=104, height=104, stroke_width=10,
                                 color=color, bgcolor=ft.Colors.with_opacity(0.12, color)),
                 ft.Container(
-                    width=104, height=104, alignment=ft.Alignment.center,
+                    width=104, height=104, alignment=ft.Alignment.CENTER,
                     content=ft.Column([
                         ft.Text(str(round(pct * 100)) + "%", size=20, weight=ft.FontWeight.W_600),
                         ft.Text(fmt_num(balance) + " л", size=11, color=ft.Colors.GREY_600),
@@ -585,7 +585,7 @@ async def main(page: ft.Page):
             ], width=104, height=104)
         except Exception:
             return ft.Container(
-                width=104, height=104, alignment=ft.Alignment.center,
+                width=104, height=104, alignment=ft.Alignment.CENTER,
                 content=ft.Column([
                     ft.Text(str(round(pct * 100)) + "%", size=22, weight=ft.FontWeight.W_600,
                             color=color),
@@ -604,7 +604,7 @@ async def main(page: ft.Page):
             h = max(2, round((v / peak) * height)) if v else 2
             bars.append(ft.Container(
                 width=5, height=h, bgcolor=color if v else ft.Colors.GREY_300,
-                border_radius=3, alignment=ft.Alignment.bottom_center))
+                border_radius=3, alignment=ft.Alignment.BOTTOM_CENTER))
         return ft.Row(bars, spacing=3, height=height,
                       alignment=ft.MainAxisAlignment.START,
                       vertical_alignment=ft.CrossAxisAlignment.END)
@@ -929,7 +929,7 @@ async def main(page: ft.Page):
                     background=ft.Container(
                         border_radius=16, bgcolor=ft.Colors.RED_400,
                         padding=ft.Padding.all(16),
-                        alignment=ft.Alignment.center_right,
+                        alignment=ft.Alignment.CENTER_RIGHT,
                         content=ft.Icon(ft.Icons.DELETE_OUTLINE, color=ft.Colors.WHITE)),
                     on_dismiss=make_dismiss_handler(iso),
                 ))
@@ -1131,19 +1131,43 @@ async def main(page: ft.Page):
             render()
             open_car_dialog(active_car())
 
-        lv = ft.ListView(spacing=8, height=min(len(state["cars"]) * 66 + 10, 260))
+        lv = ft.ListView(spacing=8, height=min(len(state["cars"]) * 92 + 10, 340))
         for c in state["cars"]:
             selected = c["id"] == state["active_id"]
             handler = make_select(c["id"])
+            # Текущий остаток топлива и пробег по каждой машине — считаем
+            # так же, как в остальном приложении (последовательно проходя
+            # все записи этой машины от старта), а не только для активной.
+            bal, odo = running_state(c, car_entries(c["id"]))
+            tank = c["tank"] or 1.0
+            pct = max(0.0, min(1.0, bal / tank))
+            fuel_color = ft.Colors.RED_400 if pct < 0.15 else (
+                ft.Colors.AMBER_600 if pct < 0.35 else ft.Colors.GREEN_600)
+            traveled = max(odo - c["start_odo"], 0.0)
+            fuel_bar = ft.Stack([
+                ft.Container(width=70, height=7, bgcolor=ft.Colors.GREY_300, border_radius=4),
+                ft.Container(width=max(4, 70 * pct), height=7, bgcolor=fuel_color, border_radius=4),
+            ], width=70, height=7)
             row = ft.ListTile(
                 leading=ft.CircleAvatar(
                     bgcolor=car_color(c["id"]),
                     content=ft.Icon(ft.Icons.DIRECTIONS_CAR, color=ft.Colors.WHITE, size=18)),
                 title=ft.Text(c["name"] + ((" · " + c["plate"]) if c["plate"] else ""), size=14),
-                subtitle=ft.Text("бак %s л · нормы %s / %s / %s" % (
-                    num_str(c["tank"]), num_str(c["norm_city"]),
-                    num_str(c["norm_hw"]), num_str(c["norm_idle"])), size=12),
-                trailing=ft.Icon(ft.Icons.CHECK_CIRCLE, size=18) if selected else None,
+                subtitle=ft.Column([
+                    ft.Text("бак %s л · нормы %s / %s / %s" % (
+                        num_str(c["tank"]), num_str(c["norm_city"]),
+                        num_str(c["norm_hw"]), num_str(c["norm_idle"])), size=12),
+                    ft.Text("пробег с начала учёта: %s км · спидометр: %s км" % (
+                        fmt_num(traveled, 0), fmt_num(odo, 0)), size=12, color=ft.Colors.GREY_600),
+                ], spacing=2),
+                trailing=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.CHECK_CIRCLE, size=16) if selected else ft.Container(width=16),
+                        ft.Text(fmt_num(bal) + " л", size=13, weight=ft.FontWeight.W_600,
+                                color=fuel_color),
+                    ], spacing=4),
+                    fuel_bar,
+                ], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.END),
                 on_click=handler,
             )
             # on_click ставим и на ListTile, и на оборачивающий Container —
@@ -1173,7 +1197,7 @@ async def main(page: ft.Page):
                 name_new,
                 plate_new,
                 ft.Button(content="Добавить и настроить", icon=ft.Icons.ADD, on_click=add),
-            ], height=min((page.height or 700) - 160, 520), width=dlg_width,
+            ], height=min((page.height or 700) - 160, 560), width=dlg_width,
                scroll=ft.ScrollMode.AUTO, spacing=10),
             actions=[ft.TextButton("Закрыть", on_click=lambda e: close_dialog(dlg))],
         )
