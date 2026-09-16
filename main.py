@@ -551,6 +551,8 @@ async def main(page: ft.Page):
             content=content)
 
     def info_row(label, ctrl):
+        if isinstance(ctrl, str):
+            ctrl = ft.Text(ctrl, size=14, weight=ft.FontWeight.W_500)
         return ft.Row(
             [ft.Text(label, expand=True, size=14, color=ft.Colors.GREY_700), ctrl],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
@@ -823,6 +825,136 @@ async def main(page: ft.Page):
 
     # ---------- экран 2: месяц ----------
 
+    def open_share_dialog(e=None):
+        car = active_car()
+        entries_all = car_entries()
+        y, m = state["year"], state["month"]
+        prefix = "%04d-%02d-" % (y, m)
+        days_with_data = sorted(
+            [en for en in entries_all if en["date"].startswith(prefix)],
+            key=lambda x: x["date"])
+        if not days_with_data:
+            snack("В этом месяце нет записей, которыми можно поделиться")
+            return
+
+        options = [ft.dropdown.Option(en["date"], fmt_date_ru(en["date"])) for en in days_with_data]
+        from_dd = ft.Dropdown(label="С какого дня", options=options, value=days_with_data[0]["date"], expand=True)
+        to_dd = ft.Dropdown(label="По какой день", options=options, value=days_with_data[-1]["date"], expand=True)
+        result_tf = ft.TextField(label="Текст для отправки", multiline=True, min_lines=4, max_lines=8, read_only=True)
+        count_txt = ft.Text(size=12, color=ft.Colors.GREY_600)
+
+        def build_payload(*_):
+            f, t = from_dd.value, to_dd.value
+            if f > t:
+                f, t = t, f
+            sel = [en for en in days_with_data if f <= en["date"] <= t]
+            payload = {"type": "fuel_days_v1", "car_name": car["name"], "entries": sel}
+            result_tf.value = json.dumps(payload, ensure_ascii=False)
+            count_txt.value = "Дней в выборке: %d" % len(sel)
+            page.update()
+
+        from_dd.on_change = build_payload
+        to_dd.on_change = build_payload
+        build_payload()
+
+        def copy(e):
+            try:
+                page.set_clipboard(result_tf.value)
+                snack("Скопировано — вставьте текст в сообщение (мессенджер, SMS)")
+            except Exception:
+                snack("Не удалось скопировать автоматически — выделите текст вручную")
+
+        dlg = ft.AlertDialog(
+            title=ft.Text("Поделиться днями"),
+            content=ft.Column([
+                ft.Text("Выберите диапазон дней текущего месяца — получится текст, "
+                        "который можно переслать в любой мессенджер. У получателя в "
+                        "этом же приложении: Месяц → «Добавить из текста».",
+                        size=12, color=ft.Colors.GREY_600),
+                ft.Row([from_dd, to_dd], spacing=10),
+                count_txt,
+                result_tf,
+            ], height=420, width=min((page.width or 380) - 32, 440),
+               scroll=ft.ScrollMode.AUTO, spacing=10),
+            actions=[
+                ft.TextButton("Закрыть", on_click=lambda e: close_dialog(dlg)),
+                ft.Button(content="Скопировать", icon=ft.Icons.COPY, on_click=copy),
+            ],
+        )
+        open_dialog(dlg)
+
+    def open_import_dialog(e=None):
+        paste_tf = ft.TextField(label="Вставьте полученный текст", multiline=True,
+                                min_lines=4, max_lines=8)
+        preview = ft.Column(spacing=2)
+
+        def parse(*_):
+            preview.controls.clear()
+            try:
+                data = json.loads(paste_tf.value)
+                ents = data.get("entries") or []
+                if not ents:
+                    raise ValueError
+                src = data.get("car_name", "")
+                if src:
+                    preview.controls.append(ft.Text("Отправитель: " + src, size=12,
+                                                     color=ft.Colors.GREY_600))
+                for en in ents:
+                    preview.controls.append(ft.Text(
+                        "• " + fmt_date_ru(en["date"]) + " — " +
+                        fmt_num(en.get("km_city", 0) + en.get("km_hw", 0), 0) + " км, " +
+                        fmt_num(en.get("issued", 0)) + " л выдано", size=12))
+            except Exception:
+                preview.controls.append(ft.Text("Не удалось распознать данные — "
+                                                 "проверьте, что текст скопирован полностью",
+                                                 size=12, color=ft.Colors.RED))
+            page.update()
+
+        paste_tf.on_change = parse
+
+        async def do_import(e):
+            try:
+                data = json.loads(paste_tf.value)
+                ents = data.get("entries") or []
+                if not ents:
+                    raise ValueError
+            except Exception:
+                snack("Не удалось распознать данные")
+                return
+            lst = car_entries()
+            added, replaced = 0, 0
+            for en in ents:
+                for i, existing in enumerate(lst):
+                    if existing["date"] == en["date"]:
+                        lst[i] = en
+                        replaced += 1
+                        break
+                else:
+                    lst.append(en)
+                    added += 1
+            await save_all()
+            close_dialog(dlg)
+            snack("Добавлено дней: %d, заменено: %d" % (added, replaced))
+            render()
+
+        dlg = ft.AlertDialog(
+            title=ft.Text("Добавить полученные дни"),
+            content=ft.Column([
+                ft.Text("Вставьте текст, присланный из этого же приложения "
+                        "(Месяц → «Поделиться»). Записи добавятся в текущее авто, "
+                        "совпадающие даты будут заменены.", size=12, color=ft.Colors.GREY_600),
+                paste_tf,
+                ft.Divider(height=4),
+                preview,
+            ], height=440, width=min((page.width or 380) - 32, 440),
+               scroll=ft.ScrollMode.AUTO, spacing=10),
+            actions=[
+                ft.TextButton("Отмена", on_click=lambda e: close_dialog(dlg)),
+                ft.Button(content="Добавить в этот месяц", icon=ft.Icons.ADD, on_click=do_import),
+            ],
+        )
+        open_dialog(dlg)
+
     def month_view():
         car = active_car()
         y, m = state["year"], state["month"]
@@ -867,6 +999,12 @@ async def main(page: ft.Page):
                     weight=ft.FontWeight.W_500, expand=True, text_align=ft.TextAlign.CENTER),
             ft.IconButton(ft.Icons.CHEVRON_RIGHT, on_click=lambda e: shift(1)),
         ]))
+        lv.controls.append(ft.Row([
+            ft.OutlinedButton("Поделиться", icon=ft.Icons.IOS_SHARE,
+                               on_click=open_share_dialog, expand=True),
+            ft.OutlinedButton("Добавить из текста", icon=ft.Icons.CONTENT_PASTE_GO,
+                               on_click=open_import_dialog, expand=True),
+        ], spacing=8))
         if not working:
             lv.controls.append(ft.Container(
                 padding=40,
@@ -975,6 +1113,7 @@ async def main(page: ft.Page):
                 ft.Text(fmt_num(totals["end_balance"]) + " л из " + num_str(car["tank"]) + " л",
                         size=15, weight=ft.FontWeight.W_500),
                 ft.Text("Пробег за месяц: " + fmt_num(km_total, 0) + " км", size=13),
+                ft.Text("Спидометр (последний): " + fmt_num(totals["end_odo"], 0) + " км", size=13),
                 ft.Text("Расход дней с данными:", size=12, color=ft.Colors.GREY_600),
                 sparkline([r["total_l"] for r in rows if not r["empty"]]),
             ], spacing=4, expand=True),
@@ -996,6 +1135,7 @@ async def main(page: ft.Page):
             info_row("Стоянка (дизель-ген.)", fmt_num(totals["idle_diesel"]) + " ч → " + fmt_num(totals["idle_dg_l"]) + " л"),
         ] if car.get("norm_idle_diesel") else []) + [
             ft.Divider(height=8),
+            info_row("Спидометр (последний)", fmt_num(totals["end_odo"], 0) + " км"),
             info_row("На начало месяца", fmt_num(start_bal) + " л · " + fmt_num(start_odo, 0) + " км"),
             info_row("Нормы (город/трасса/стоянка)",
                      num_str(car["norm_city"]) + " / " + num_str(car["norm_hw"]) + " / " + num_str(car["norm_idle"])),
@@ -1131,43 +1271,23 @@ async def main(page: ft.Page):
             render()
             open_car_dialog(active_car())
 
-        lv = ft.ListView(spacing=8, height=min(len(state["cars"]) * 92 + 10, 340))
+        lv = ft.ListView(spacing=8, height=min(len(state["cars"]) * 70 + 10, 340))
         for c in state["cars"]:
             selected = c["id"] == state["active_id"]
             handler = make_select(c["id"])
-            # Текущий остаток топлива и пробег по каждой машине — считаем
-            # так же, как в остальном приложении (последовательно проходя
-            # все записи этой машины от старта), а не только для активной.
-            bal, odo = running_state(c, car_entries(c["id"]))
-            tank = c["tank"] or 1.0
-            pct = max(0.0, min(1.0, bal / tank))
-            fuel_color = ft.Colors.RED_400 if pct < 0.15 else (
-                ft.Colors.AMBER_600 if pct < 0.35 else ft.Colors.GREEN_600)
-            traveled = max(odo - c["start_odo"], 0.0)
-            fuel_bar = ft.Stack([
-                ft.Container(width=70, height=7, bgcolor=ft.Colors.GREY_300, border_radius=4),
-                ft.Container(width=max(4, 70 * pct), height=7, bgcolor=fuel_color, border_radius=4),
-            ], width=70, height=7)
+            # В карточке гаража теперь только название и госномер — без
+            # вложенной колонки из нескольких строк текста в subtitle:
+            # именно такая колонка ломала раскладку (текст рассыпался
+            # по одному символу на строку) в мобильной сборке. Остаток
+            # топлива и подробности остаются на вкладке «Сводка».
+            title_text = c["name"] if not c["plate"] else (c["name"] + " · " + c["plate"])
             row = ft.ListTile(
                 leading=ft.CircleAvatar(
                     bgcolor=car_color(c["id"]),
                     content=ft.Icon(ft.Icons.DIRECTIONS_CAR, color=ft.Colors.WHITE, size=18)),
-                title=ft.Text(c["name"] + ((" · " + c["plate"]) if c["plate"] else ""), size=14),
-                subtitle=ft.Column([
-                    ft.Text("бак %s л · нормы %s / %s / %s" % (
-                        num_str(c["tank"]), num_str(c["norm_city"]),
-                        num_str(c["norm_hw"]), num_str(c["norm_idle"])), size=12),
-                    ft.Text("пробег с начала учёта: %s км · спидометр: %s км" % (
-                        fmt_num(traveled, 0), fmt_num(odo, 0)), size=12, color=ft.Colors.GREY_600),
-                ], spacing=2),
-                trailing=ft.Column([
-                    ft.Row([
-                        ft.Icon(ft.Icons.CHECK_CIRCLE, size=16) if selected else ft.Container(width=16),
-                        ft.Text(fmt_num(bal) + " л", size=13, weight=ft.FontWeight.W_600,
-                                color=fuel_color),
-                    ], spacing=4),
-                    fuel_bar,
-                ], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.END),
+                title=ft.Text(title_text, size=15,
+                              weight=ft.FontWeight.W_600 if selected else ft.FontWeight.W_400),
+                trailing=ft.Icon(ft.Icons.CHECK_CIRCLE, color=ft.Colors.PRIMARY) if selected else None,
                 on_click=handler,
             )
             # on_click ставим и на ListTile, и на оборачивающий Container —
