@@ -517,8 +517,8 @@ def month_rows(car, entries, year, month):
     return rows, totals, start_bal, start_odo
 
 
-def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
-    # Экспорт заполняет копию настоящей путевой таблицы (шаблон, который
+def fill_xlsx_sheet(ws, car, year, month, rows, totals, start_bal, start_odo):
+    # Заполняет один лист копии настоящей путевой таблицы (шаблон, который
     # прислал пользователь) реальными данными — те же заголовки, объединения
     # ячеек, шрифты и формулы остаются как в оригинале. Формулы (расход,
     # остатки, накопленный пробег, "возможный пробег на остатках" и т.д.) не
@@ -526,8 +526,6 @@ def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
     # файла, как и было в исходной таблице. Единственное отличие от
     # оригинала — заполнен столбец AF ("Заметка"): место под него в шаблоне
     # уже было отведено (широкий пустой столбец), но текста там не было.
-    wb = load_workbook(io.BytesIO(base64.b64decode(TOPLIVO_TEMPLATE_XLSX_B64)))
-    ws = wb.active
     ws.title = (MONTHS_RU[month - 1] + " " + str(year)).upper()[:31]
 
     # Сведения на начало месяца и нормы расхода.
@@ -572,6 +570,45 @@ def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
             cell.value = row["note"]
             cell.alignment = note_align
             cell.border = box
+
+
+def build_xlsx(car, year, month, rows, totals, start_bal, start_odo):
+    # Один месяц — один файл с одним листом (как раньше).
+    wb = load_workbook(io.BytesIO(base64.b64decode(TOPLIVO_TEMPLATE_XLSX_B64)))
+    ws = wb.active
+    fill_xlsx_sheet(ws, car, year, month, rows, totals, start_bal, start_odo)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def build_xlsx_car(car, entries):
+    # Вся машина целиком: один файл, в котором на каждый месяц, где есть
+    # хоть одна запись, — отдельный лист (в хронологическом порядке).
+    # Если записей вообще нет, отдаём файл с одним пустым листом текущего
+    # месяца, чтобы шаблон не оставался без данных.
+    periods = sorted({(int(e["date"][0:4]), int(e["date"][5:7])) for e in entries})
+    if not periods:
+        today = datetime.date.today()
+        periods = [(today.year, today.month)]
+
+    wb = load_workbook(io.BytesIO(base64.b64decode(TOPLIVO_TEMPLATE_XLSX_B64)))
+    template_ws = wb.active
+    used_titles = set()
+
+    for i, (y, m) in enumerate(periods):
+        rows, totals, start_bal, start_odo = month_rows(car, entries, y, m)
+        ws = template_ws if i == 0 else wb.copy_worksheet(template_ws)
+        fill_xlsx_sheet(ws, car, y, m, rows, totals, start_bal, start_odo)
+        # На случай совпадения заголовков (не должно случаться, т.к.
+        # периоды уникальны, но подстрахуемся от обрезки в 31 символ).
+        title = ws.title
+        n = 2
+        while title in used_titles:
+            title = (ws.title[:28] + " (%d)" % n)
+            n += 1
+        ws.title = title
+        used_titles.add(title)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -817,14 +854,14 @@ async def main(page: ft.Page):
                 ft.ProgressRing(value=pct, width=104, height=104, stroke_width=10,
                                 color=color, bgcolor=ft.Colors.with_opacity(0.12, color)),
                 ft.Container(
-                    width=104, height=104, alignment=ft.Alignment.CENTER,
+                    expand=True, alignment=ft.Alignment.CENTER,
                     content=ft.Column([
                         ft.Text(str(round(pct * 100)) + "%", size=20, weight=ft.FontWeight.W_600),
                         ft.Text(fmt_num(balance) + " л", size=11, color=ft.Colors.GREY_600),
                     ], spacing=0, alignment=ft.MainAxisAlignment.CENTER,
                        horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                 ),
-            ], width=104, height=104)
+            ], width=104, height=104, alignment=ft.Alignment.CENTER)
         except Exception:
             return ft.Container(
                 width=104, height=104, alignment=ft.Alignment.CENTER,
@@ -1067,6 +1104,44 @@ async def main(page: ft.Page):
 
     # ---------- экран 2: месяц ----------
 
+    def open_share_car_dialog(e=None):
+        # Передача ВСЕЙ машины целиком (настройки + все записи за все
+        # месяцы) в виде текста — чтобы на втором телефоне в этом же
+        # приложении можно было добавить её как отдельную машину со всей
+        # историей, без Excel и без файлового пикера (не везде надёжен).
+        car = active_car()
+        entries_all = car_entries()
+        payload = {"type": "car_full_v1", "car": car, "entries": entries_all}
+        text = json.dumps(payload, ensure_ascii=False)
+        result_tf = ft.TextField(label="Текст для отправки", value=text, multiline=True,
+                                 min_lines=4, max_lines=8, read_only=True)
+
+        def copy(e):
+            try:
+                page.set_clipboard(text)
+                snack("Скопировано — вставьте текст в сообщение (мессенджер, SMS)")
+            except Exception:
+                snack("Не удалось скопировать автоматически — выделите текст вручную")
+
+        dlg = ft.AlertDialog(
+            title=ft.Text("Передать машину на другой телефон"),
+            content=ft.Column([
+                ft.Text("Скопируйте текст и перешлите его любым способом (мессенджер, "
+                        "почта, заметки). На втором телефоне, в этом же приложении: "
+                        "вкладка «Месяц» → «Добавить из текста», вставьте текст — "
+                        "появится новая машина «%s» со всеми %d записями." %
+                        (car["name"], len(entries_all)),
+                        size=12, color=ft.Colors.GREY_600),
+                result_tf,
+            ], height=340, width=min((page.width or 380) - 32, 440),
+               scroll=ft.ScrollMode.AUTO, spacing=10),
+            actions=[
+                ft.TextButton("Закрыть", on_click=lambda e: close_dialog(dlg)),
+                ft.Button(content="Скопировать", icon=ft.Icons.COPY, on_click=copy),
+            ],
+        )
+        open_dialog(dlg)
+
     def open_share_dialog(e=None):
         car = active_car()
         entries_all = car_entries()
@@ -1134,18 +1209,29 @@ async def main(page: ft.Page):
             preview.controls.clear()
             try:
                 data = json.loads(paste_tf.value)
-                ents = data.get("entries") or []
-                if not ents:
-                    raise ValueError
-                src = data.get("car_name", "")
-                if src:
-                    preview.controls.append(ft.Text("Отправитель: " + src, size=12,
-                                                     color=ft.Colors.GREY_600))
-                for en in ents:
+                kind = data.get("type")
+                if kind == "car_full_v1":
+                    car = data.get("car") or {}
+                    ents = data.get("entries") or []
                     preview.controls.append(ft.Text(
-                        "• " + fmt_date_ru(en["date"]) + " — " +
-                        fmt_num(en.get("km_city", 0) + en.get("km_hw", 0), 0) + " км, " +
-                        fmt_num(en.get("issued", 0)) + " л выдано", size=12))
+                        "Целая машина: " + car.get("name", "без названия"), size=12,
+                        color=ft.Colors.GREY_600))
+                    preview.controls.append(ft.Text(
+                        "Записей: %d — добавится как НОВАЯ машина, текущие данные "
+                        "не затрагиваются" % len(ents), size=12))
+                else:
+                    ents = data.get("entries") or []
+                    if not ents:
+                        raise ValueError
+                    src = data.get("car_name", "")
+                    if src:
+                        preview.controls.append(ft.Text("Отправитель: " + src, size=12,
+                                                         color=ft.Colors.GREY_600))
+                    for en in ents:
+                        preview.controls.append(ft.Text(
+                            "• " + fmt_date_ru(en["date"]) + " — " +
+                            fmt_num(en.get("km_city", 0) + en.get("km_hw", 0), 0) + " км, " +
+                            fmt_num(en.get("issued", 0)) + " л выдано", size=12))
             except Exception:
                 preview.controls.append(ft.Text("Не удалось распознать данные — "
                                                  "проверьте, что текст скопирован полностью",
@@ -1157,6 +1243,28 @@ async def main(page: ft.Page):
         async def do_import(e):
             try:
                 data = json.loads(paste_tf.value)
+            except Exception:
+                snack("Не удалось распознать данные")
+                return
+
+            if data.get("type") == "car_full_v1":
+                src_car = data.get("car") or {}
+                ents = data.get("entries") or []
+                car = new_car(src_car.get("name") or "Машина из текста")
+                for field in ("plate", "tank", "norm_city", "norm_hw", "norm_idle",
+                              "norm_idle_diesel", "start_odo", "start_fuel"):
+                    if field in src_car:
+                        car[field] = src_car[field]
+                state["cars"].append(car)
+                state["entries"][car["id"]] = ents
+                state["active_id"] = car["id"]
+                await save_all()
+                close_dialog(dlg)
+                snack("Добавлена новая машина «%s», записей: %d" % (car["name"], len(ents)))
+                render()
+                return
+
+            try:
                 ents = data.get("entries") or []
                 if not ents:
                     raise ValueError
@@ -1180,11 +1288,12 @@ async def main(page: ft.Page):
             render()
 
         dlg = ft.AlertDialog(
-            title=ft.Text("Добавить полученные дни"),
+            title=ft.Text("Добавить полученные данные"),
             content=ft.Column([
-                ft.Text("Вставьте текст, присланный из этого же приложения "
-                        "(Месяц → «Поделиться»). Записи добавятся в текущее авто, "
-                        "совпадающие даты будут заменены.", size=12, color=ft.Colors.GREY_600),
+                ft.Text("Вставьте текст, присланный из этого же приложения — либо дни "
+                        "месяца (Месяц → «Поделиться»), либо целая машина (Сводка → "
+                        "«Передать машину на другой телефон»). Дни добавятся в текущую "
+                        "машину, целая машина — как новая.", size=12, color=ft.Colors.GREY_600),
                 paste_tf,
                 ft.Divider(height=4),
                 preview,
@@ -1192,7 +1301,7 @@ async def main(page: ft.Page):
                scroll=ft.ScrollMode.AUTO, spacing=10),
             actions=[
                 ft.TextButton("Отмена", on_click=lambda e: close_dialog(dlg)),
-                ft.Button(content="Добавить в этот месяц", icon=ft.Icons.ADD, on_click=do_import),
+                ft.Button(content="Добавить", icon=ft.Icons.ADD, on_click=do_import),
             ],
         )
         open_dialog(dlg)
@@ -1325,9 +1434,7 @@ async def main(page: ft.Page):
         rows, totals, start_bal, start_odo = month_rows(car, car_entries(), y, m)
         km_total = totals["km_city"] + totals["km_hw"]
 
-        async def export_click(e):
-            data = build_xlsx(car, y, m, rows, totals, start_bal, start_odo)
-            fname = "Топливо_%s_%d.xlsx" % (MONTHS_RU[m - 1], y)
+        async def save_bytes_as(data, fname):
             # На вебе и на мобильных (Android/iOS) у save_file нет доступа
             # к файловой системе как на десктопе: получить путь и потом
             # самим дозаписать в него байты там нельзя ("src_bytes" is
@@ -1388,6 +1495,17 @@ async def main(page: ft.Page):
                 snack("Файл сохранён")
             page.update()
 
+        async def export_click(e):
+            data = build_xlsx(car, y, m, rows, totals, start_bal, start_odo)
+            fname = "Топливо_%s_%d.xlsx" % (MONTHS_RU[m - 1], y)
+            await save_bytes_as(data, fname)
+
+        async def export_car_click(e):
+            data = build_xlsx_car(car, car_entries(car["id"]))
+            safe_name = "".join(ch if (ch.isalnum() or ch in " _-") else "_" for ch in car["name"]) or "Авто"
+            fname = "Топливо_%s_все_данные.xlsx" % safe_name
+            await save_bytes_as(data, fname)
+
         lv = ft.ListView(expand=True, spacing=10, padding=ft.Padding.all(12))
         lv.controls.append(ft.Text(MONTHS_RU[m - 1] + " " + str(y), size=17,
                                    weight=ft.FontWeight.W_500))
@@ -1426,8 +1544,14 @@ async def main(page: ft.Page):
             info_row("Нормы (город/трасса/стоянка)",
                      num_str(car["norm_city"]) + " / " + num_str(car["norm_hw"]) + " / " + num_str(car["norm_idle"])),
         ], spacing=6)))
-        lv.controls.append(ft.Button(content="Экспорт в Excel", icon=ft.Icons.DOWNLOAD,
+        lv.controls.append(ft.Button(content="Экспорт месяца в Excel", icon=ft.Icons.DOWNLOAD,
                                      on_click=export_click))
+        lv.controls.append(ft.OutlinedButton("Экспорт всей машины (все месяцы)",
+                                             icon=ft.Icons.DIRECTIONS_CAR,
+                                             on_click=export_car_click))
+        lv.controls.append(ft.OutlinedButton("Передать машину на другой телефон",
+                                             icon=ft.Icons.SEND,
+                                             on_click=open_share_car_dialog))
         lv.controls.append(ft.OutlinedButton("Параметры авто", icon=ft.Icons.SETTINGS,
                                              on_click=lambda e: open_car_dialog(active_car())))
         return lv
@@ -1657,107 +1781,4 @@ async def main(page: ft.Page):
                     await result
                 page.update()
                 return
-            except Exception:
-                pass
-        try:
-            drawer.open = False
-            page.update()
-        except Exception:
-            pass
-
-    def build_drawer_items():
-        car = active_car()
-
-        def go(idx):
-            async def handler(e):
-                await close_drawer()
-                switch_tab(idx)
-            return handler
-
-        async def go_garage(e):
-            await close_drawer()
-            open_garage()
-
-        async def go_car_settings(e):
-            await close_drawer()
-            open_car_dialog(active_car())
-
-        async def go_export(e):
-            await close_drawer()
-            switch_tab(2)  # вкладка «Сводка» — там кнопка «Экспорт в Excel»
-
-        items = [
-            ft.Container(
-                padding=ft.Padding.all(20),
-                content=ft.Column([
-                    ft.CircleAvatar(bgcolor=car_color(car["id"]),
-                                    content=ft.Icon(ft.Icons.LOCAL_GAS_STATION,
-                                                    color=ft.Colors.WHITE, size=20)),
-                    ft.Text(car["name"] + ((" · " + car["plate"]) if car["plate"] else ""),
-                            size=16, weight=ft.FontWeight.W_600),
-                    ft.Text("Учёт топлива", size=12, color=ft.Colors.GREY_600),
-                ], spacing=4),
-            ),
-            ft.Divider(height=1),
-        ]
-
-        nav_defs = [("Запись", ft.Icons.EDIT_NOTE, 0),
-                    ("Месяц", ft.Icons.CALENDAR_MONTH, 1),
-                    ("Сводка", ft.Icons.INSIGHTS, 2)]
-        for label, icon, idx in nav_defs:
-            selected = state["tab"] == idx
-            items.append(ft.Container(
-                padding=ft.Padding.all(4),
-                content=ft.Container(
-                    bgcolor=ft.Colors.SECONDARY_CONTAINER if selected else None,
-                    border_radius=12,
-                    content=ft.ListTile(
-                        leading=ft.Icon(icon),
-                        title=ft.Text(label, weight=ft.FontWeight.W_500 if selected else None),
-                        on_click=go(idx),
-                    ),
-                ),
-            ))
-
-        items.append(ft.Divider(height=1))
-        for label, icon, handler, sub in [
-            ("Гараж", ft.Icons.GARAGE, go_garage, "%d авто" % len(state["cars"])),
-            ("Параметры авто", ft.Icons.SETTINGS, go_car_settings, None),
-            ("Экспорт в Excel", ft.Icons.DOWNLOAD, go_export, None),
-        ]:
-            items.append(ft.Container(
-                padding=ft.Padding.all(4),
-                content=ft.ListTile(
-                    leading=ft.Icon(icon),
-                    title=ft.Text(label),
-                    subtitle=ft.Text(sub, size=11) if sub else None,
-                    on_click=handler,
-                ),
-            ))
-        return items
-
-    def render():
-        builders = (entry_view, month_view, summary_view)
-        body.controls.clear()
-        body.controls.append(builders[state["tab"]]())
-        car = active_car()
-        page.appbar.title = ft.Text(car["name"] + ((" · " + car["plate"]) if car["plate"] else ""))
-        drawer.controls = build_drawer_items()
-        page.update()
-
-    def switch_tab(idx):
-        state["tab"] = idx
-        render()
-
-    page.appbar = ft.AppBar(
-        leading=ft.IconButton(ft.Icons.MENU, tooltip="Меню", on_click=open_drawer),
-        title=ft.Text("Учёт топлива"),
-    )
-    page.drawer = drawer
-    page.add(body)
-
-    await load_all()
-    render()
-
-
-ft.run(main)
+            exce
