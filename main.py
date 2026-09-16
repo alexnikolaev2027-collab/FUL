@@ -433,13 +433,17 @@ async def main(page: ft.Page):
     # шторка меню, снекбар): где-то show_x(control) принимает контрол
     # аргументом, где-то show_x() — без аргументов и показывает то, что
     # уже лежит в соответствующем свойстве страницы (page.dialog,
-    # page.drawer...). Именно на этом споткнулись переключение авто и
-    # удаление раньше, и на этом же споткнулось меню (show_drawer()
-    # takes 1 positional argument but 2 were given). Эти две обёртки
-    # пробуют все правдоподобные варианты по очереди и только в
-    # крайнем случае откатываются на самый старый способ (.open=True
-    # + page.overlay) — поэтому дальше по коду что открытие, что
-    # закрытие не зависят от того, какая именно сигнатура в этой сборке.
+    # page.drawer...), а где-то таких методов вообще нет и работает
+    # только универсальный page.open()/page.close() (это оказалось
+    # верно и для диалогов, и — после исправления — для бокового меню).
+    # Эти две обёртки пробуют все правдоподобные варианты по очереди и
+    # только в крайнем случае откатываются на самый старый способ
+    # (.open=True + page.overlay), поэтому дальше по коду что открытие,
+    # что закрытие не зависят от того, какая именно сигнатура в этой
+    # сборке. ВАЖНО: и диалоги, и боковое меню (drawer) обязаны идти
+    # через эти же обёртки — отдельная, "самодельная" реализация именно
+    # для drawer раньше не доходила до фолбэка page.open() и поэтому
+    # меню не открывалось по нажатию на иконку.
     def _show_overlay(page_prop, method_name, control):
         try:
             setattr(page, page_prop, control)
@@ -1185,51 +1189,19 @@ async def main(page: ft.Page):
     # активный пункт и актуальное название машины.
     drawer = ft.NavigationDrawer(controls=[])
 
+    # ИСПРАВЛЕНО: раньше open_drawer/close_drawer были написаны отдельно
+    # от _show_overlay/_hide_overlay и останавливались до вызова
+    # page.open()/page.close() — единственного способа показать что-либо
+    # в этой сборке Flet (в ней нет ни show_dialog, ни show_drawer как
+    # реально работающих методов; и диалоги, и меню открываются только
+    # через page.open()). Именно поэтому кнопка меню не реагировала.
+    # Теперь drawer открывается/закрывается через те же проверенные
+    # обёртки, что и диалоги.
     def open_drawer(e=None):
-        # У Drawer, в отличие от диалогов, похоже, мало одного вызова
-        # show_drawer() — сама по себе она может не обновлять экран. Бьём
-        # сразу по всем фронтам: назначаем page.drawer, выставляем флаг
-        # .open, зовём show_drawer() (с аргументом и без) и в любом случае
-        # обновляем страницу — если что-то из этого лишнее, оно просто
-        # молча ничего не сделает.
-        try:
-            page.drawer = drawer
-        except Exception:
-            pass
-        try:
-            drawer.open = True
-        except Exception:
-            pass
-        fn = getattr(page, "show_drawer", None)
-        if fn is not None:
-            try:
-                fn()
-            except TypeError:
-                try:
-                    fn(drawer)
-                except Exception:
-                    pass
-            except Exception:
-                pass
-        page.update()
+        _show_overlay("drawer", "show_drawer", drawer)
 
     def close_drawer(e=None):
-        try:
-            drawer.open = False
-        except Exception:
-            pass
-        fn = getattr(page, "pop_drawer", None)
-        if fn is not None:
-            try:
-                fn()
-            except TypeError:
-                try:
-                    fn(drawer)
-                except Exception:
-                    pass
-            except Exception:
-                pass
-        page.update()
+        _hide_overlay("pop_drawer", drawer)
 
     def build_drawer_items():
         car = active_car()
