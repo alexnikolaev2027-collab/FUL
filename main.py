@@ -429,57 +429,110 @@ async def main(page: ft.Page):
     def car_entries(car_id=None):
         return state["entries"].setdefault(car_id or state["active_id"], [])
 
-    # Разные версии/сборки Flet по-разному реализуют показ диалогов
-    # (новый API page.show_dialog/page.pop_dialog против старого
-    # page.dialog + dlg.open). Если нужный метод отсутствует, вызов
-    # тихо падает с AttributeError и просто ничего не происходит на
-    # экране — именно так выглядели "не работающие" кнопки переключения
-    # и удаления. Эти обёртки пробуют новый API, а если его нет —
-    # откатываются на старый, поэтому диалоги открываются и закрываются
-    # независимо от версии Flet в сборке.
-    def open_dialog(dlg):
+    # Разные сборки Flet по-разному реализуют показ оверлеев (диалог,
+    # шторка меню, снекбар): где-то show_x(control) принимает контрол
+    # аргументом, где-то show_x() — без аргументов и показывает то, что
+    # уже лежит в соответствующем свойстве страницы (page.dialog,
+    # page.drawer...). Именно на этом споткнулись переключение авто и
+    # удаление раньше, и на этом же споткнулось меню (show_drawer()
+    # takes 1 positional argument but 2 were given). Эти две обёртки
+    # пробуют все правдоподобные варианты по очереди и только в
+    # крайнем случае откатываются на самый старый способ (.open=True
+    # + page.overlay) — поэтому дальше по коду что открытие, что
+    # закрытие не зависят от того, какая именно сигнатура в этой сборке.
+    def _show_overlay(page_prop, method_name, control):
         try:
-            page.show_dialog(dlg)
+            setattr(page, page_prop, control)
+        except Exception:
+            pass
+        fn = getattr(page, method_name, None)
+        if fn is not None:
+            try:
+                fn(control)
+                return
+            except TypeError:
+                try:
+                    fn()
+                    return
+                except TypeError:
+                    pass
+        try:
+            page.open(control)
+            return
         except AttributeError:
-            page.overlay.append(dlg)
-            dlg.open = True
-            page.update()
+            pass
+        page.overlay.append(control)
+        control.open = True
+        page.update()
+
+    def _hide_overlay(method_name, control):
+        fn = getattr(page, method_name, None)
+        if fn is not None:
+            try:
+                fn()
+                return
+            except TypeError:
+                try:
+                    fn(control)
+                    return
+                except TypeError:
+                    pass
+        try:
+            page.close(control)
+            return
+        except AttributeError:
+            pass
+        if control is not None:
+            control.open = False
+        page.update()
+
+    def open_dialog(dlg):
+        _show_overlay("dialog", "show_dialog", dlg)
 
     def close_dialog(dlg=None):
-        try:
-            page.pop_dialog()
-        except AttributeError:
-            if dlg is not None:
-                dlg.open = False
-            elif getattr(page, "dialog", None) is not None:
-                page.dialog.open = False
-            page.update()
+        _hide_overlay("pop_dialog", dlg)
 
     def snack(msg):
         sb = ft.SnackBar(ft.Text(msg))
+        _show_overlay("dialog", "show_dialog", sb)
+
+    def safe_shadow(blur, dy, opacity=0.10):
+        # BoxShadow/Offset — не гарантированно одинаковые в разных
+        # сборках Flet. Возвращает None, если конструктор не подошёл,
+        # чтобы вызывающий код мог подстраховаться рамкой вместо тени.
         try:
-            page.show_dialog(sb)
-        except AttributeError:
-            try:
-                page.open(sb)
-            except AttributeError:
-                page.overlay.append(sb)
-                sb.open = True
-                page.update()
+            return ft.BoxShadow(blur_radius=blur, spread_radius=0,
+                                color=ft.Colors.with_opacity(opacity, ft.Colors.BLACK),
+                                offset=ft.Offset(0, dy))
+        except Exception:
+            return None
+
+    def safe_container(shadow, **kwargs):
+        # Строит Container с тенью, если параметр shadow= вообще
+        # принимается в этой сборке Flet; если нет (или сама тень не
+        # собралась выше) — тот же контейнер, но с тонкой рамкой вместо
+        # тени, чтобы карточка всё равно была визуально видна. border
+        # мог быть передан явно (например, синяя рамка "сегодня") —
+        # в этом случае резервную рамку не подставляем.
+        if shadow is None:
+            if kwargs.get("border") is None:
+                kwargs["border"] = ft.Border.all(1, ft.Colors.OUTLINE_VARIANT)
+            return ft.Container(**kwargs)
+        try:
+            return ft.Container(shadow=shadow, **kwargs)
+        except Exception:
+            if kwargs.get("border") is None:
+                kwargs["border"] = ft.Border.all(1, ft.Colors.OUTLINE_VARIANT)
+            return ft.Container(**kwargs)
 
     def card_container(content, padding=14, bgcolor=None):
         # Общий "современный" стиль карточки: скруглённые углы + мягкая
         # тень вместо стандартной плоской рамки/жёсткой Card-тени.
-        return ft.Container(
-            padding=padding,
-            border_radius=18,
+        return safe_container(
+            safe_shadow(14, 4),
+            padding=padding, border_radius=18,
             bgcolor=bgcolor or ft.Colors.SURFACE,
-            shadow=ft.BoxShadow(
-                blur_radius=14, spread_radius=0,
-                color=ft.Colors.with_opacity(0.10, ft.Colors.BLACK),
-                offset=ft.Offset(0, 4)),
-            content=content,
-        )
+            content=content)
 
     def info_row(label, ctrl):
         return ft.Row(
@@ -496,21 +549,32 @@ async def main(page: ft.Page):
 
     def fuel_gauge(balance, tank):
         # Дуговой индикатор остатка топлива — на глаз видно заполнение
-        # бака, а не только цифру.
+        # бака, а не только цифру. Stack/ProgressRing тоже подстрахованы:
+        # если в сборке их нет или другие параметры — просто текстовая
+        # версия того же самого (без визуального кольца).
         pct = max(0.0, min(1.0, (balance / tank) if tank else 0.0))
         color = ft.Colors.RED_400 if pct < 0.15 else (
             ft.Colors.AMBER_600 if pct < 0.35 else ft.Colors.GREEN_600)
-        return ft.Stack([
-            ft.ProgressRing(value=pct, width=104, height=104, stroke_width=10,
-                            color=color, bgcolor=ft.Colors.with_opacity(0.12, color)),
-            ft.Container(
+        try:
+            return ft.Stack([
+                ft.ProgressRing(value=pct, width=104, height=104, stroke_width=10,
+                                color=color, bgcolor=ft.Colors.with_opacity(0.12, color)),
+                ft.Container(
+                    width=104, height=104, alignment=ft.Alignment.center,
+                    content=ft.Column([
+                        ft.Text(str(round(pct * 100)) + "%", size=20, weight=ft.FontWeight.W_600),
+                        ft.Text(fmt_num(balance) + " л", size=11, color=ft.Colors.GREY_600),
+                    ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                ),
+            ], width=104, height=104)
+        except Exception:
+            return ft.Container(
                 width=104, height=104, alignment=ft.Alignment.center,
                 content=ft.Column([
-                    ft.Text(str(round(pct * 100)) + "%", size=20, weight=ft.FontWeight.W_600),
+                    ft.Text(str(round(pct * 100)) + "%", size=22, weight=ft.FontWeight.W_600,
+                            color=color),
                     ft.Text(fmt_num(balance) + " л", size=11, color=ft.Colors.GREY_600),
-                ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            ),
-        ], width=104, height=104)
+                ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER))
 
     def sparkline(values, height=44, color=None):
         # Простой спарклайн без графической библиотеки: ряд тонких
@@ -817,16 +881,12 @@ async def main(page: ft.Page):
                     snack("Запись за " + fmt_date_ru(diso) + " удалена")
                 return handler
 
-            row_card = ft.Container(
-                border=ft.Border.all(2, ft.Colors.PRIMARY) if is_today else None,
-                border_radius=16,
-                bgcolor=ft.Colors.SURFACE,
-                shadow=ft.BoxShadow(
-                    blur_radius=10, spread_radius=0,
-                    color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK),
-                    offset=ft.Offset(0, 3)),
-                on_click=open_handler,
-                ink=True,
+            row_shadow = None if is_today else safe_shadow(10, 3, opacity=0.08)
+            row_border = ft.Border.all(2, ft.Colors.PRIMARY) if is_today else None
+            row_card = safe_container(
+                row_shadow,
+                border=row_border, border_radius=16, bgcolor=ft.Colors.SURFACE,
+                on_click=open_handler, ink=True,
                 content=ft.ListTile(
                     title=ft.Text(str(r["day"]) + " " + MONTHS_GEN[m - 1] +
                                  (" · сегодня" if is_today else ""), size=14),
@@ -841,8 +901,10 @@ async def main(page: ft.Page):
             )
             # Свайп влево для удаления — приятный современный жест поверх
             # обычной кнопки-корзины. Если в этой сборке Flet нет
-            # Dismissible, просто показываем карточку без свайпа —
-            # кнопка удаления всё равно работает.
+            # Dismissible (или другой набор параметров) — просто
+            # показываем карточку без свайпа, кнопка-корзина всё равно
+            # работает. Ловим Exception широко: тут это безопасно (запись
+            # ещё не менялась), а поломка тут не должна ронять весь экран.
             try:
                 lv.controls.append(ft.Dismissible(
                     key="entry_" + iso,
@@ -855,7 +917,7 @@ async def main(page: ft.Page):
                         content=ft.Icon(ft.Icons.DELETE_OUTLINE, color=ft.Colors.WHITE)),
                     on_dismiss=make_dismiss_handler(iso),
                 ))
-            except AttributeError:
+            except Exception:
                 lv.controls.append(row_card)
         return lv
 
@@ -873,8 +935,9 @@ async def main(page: ft.Page):
             try:
                 path = await file_picker.save_file_async(
                     file_name=fname, allowed_extensions=["xlsx"])
-            except AttributeError:
-                # Совместимость со старым (не-async) FilePicker API
+            except (AttributeError, TypeError):
+                # Совместимость со старым (не-async) FilePicker API или
+                # другим набором именованных аргументов в этой сборке.
                 path = file_picker.save_file(file_name=fname, allowed_extensions=["xlsx"])
             if path:
                 try:
@@ -1111,23 +1174,10 @@ async def main(page: ft.Page):
     drawer = ft.NavigationDrawer(controls=[])
 
     def open_drawer(e=None):
-        # Как и с диалогами: в разных сборках Flet открытие Drawer может
-        # называться по-новому (show_drawer) или по-старому (через
-        # page.drawer + .open). Пробуем оба варианта, чтобы меню
-        # открывалось независимо от версии.
-        try:
-            page.show_drawer(drawer)
-        except AttributeError:
-            page.drawer = drawer
-            drawer.open = True
-            page.update()
+        _show_overlay("drawer", "show_drawer", drawer)
 
     def close_drawer(e=None):
-        try:
-            page.pop_drawer()
-        except AttributeError:
-            drawer.open = False
-            page.update()
+        _hide_overlay("pop_drawer", drawer)
 
     def build_drawer_items():
         car = active_car()
