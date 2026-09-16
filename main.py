@@ -404,10 +404,38 @@ def calc_day(car, entry):
     return city_l, hw_l, idle_l, idle_dg_l, city_l + hw_l + idle_l + idle_dg_l
 
 
+def with_derived_km(car, entries):
+    # Пробег для дня с введённым спидометром больше не берём из того, что
+    # было сохранено при вводе (это "замораживало" километраж на момент
+    # ввода и не обновлялось при добавлении более ранних дней задним
+    # числом). Вместо этого всегда пересчитываем км как разницу одометра
+    # с ближайшим ПРЕДЫДУЩИМ по дате днём, где одометр тоже был введён.
+    # Если для дня одометр не введён — используем то, что сохранено
+    # вручную (пересчитать не от чего).
+    result = []
+    prev_odo = car["start_odo"]
+    for e in sorted(entries, key=lambda x: x["date"]):
+        e2 = dict(e)
+        odo = e.get("odo", 0) or 0
+        hw = e.get("km_hw", 0.0) or 0.0
+        if odo:
+            if prev_odo and odo > prev_odo:
+                km_total = odo - prev_odo
+            else:
+                km_total = (e.get("km_city", 0.0) or 0.0) + hw
+            prev_odo = odo
+        else:
+            km_total = (e.get("km_city", 0.0) or 0.0) + hw
+        e2["km_city"] = max(km_total - hw, 0.0)
+        e2["km_hw"] = hw
+        result.append(e2)
+    return result
+
+
 def running_state(car, entries, before_iso=None):
     bal = car["start_fuel"]
     odo = car["start_odo"]
-    for e in sorted(entries, key=lambda x: x["date"]):
+    for e in with_derived_km(car, entries):
         if before_iso and e["date"] >= before_iso:
             break
         bal += e["issued"] - calc_day(car, e)[4]
@@ -426,8 +454,9 @@ def month_rows(car, entries, year, month):
     bal, odo = running_state(car, entries, start_iso)
     start_bal, start_odo = bal, odo
     prefix = "%04d-%02d-" % (year, month)
+    derived = with_derived_km(car, entries)
     by_day = {}
-    for e in entries:
+    for e in derived:
         if e["date"].startswith(prefix):
             by_day[int(e["date"][8:10])] = e
     rows = []
@@ -828,6 +857,7 @@ async def main(page: ft.Page):
         entries = car_entries()
         iso = state["selected_date"]
         existing = next((e for e in entries if e["date"] == iso), None)
+        existing_disp = next((e for e in with_derived_km(car, entries) if e["date"] == iso), None)
         bal_before, odo_before = running_state(car, entries, iso)
 
         date_tf = ft.TextField(label="Дата (ДД.ММ.ГГГГ)", value=fmt_date_ru(iso))
@@ -840,10 +870,10 @@ async def main(page: ft.Page):
             size=12, color=ft.Colors.GREY_600)
         total_km_tf = ft.TextField(
             label="Пробег всего, км (считается по спидометру)",
-            value=num_str(existing["km_city"] + existing["km_hw"]) if existing else "",
+            value=num_str(existing_disp["km_city"] + existing_disp["km_hw"]) if existing_disp else "",
             keyboard_type=ft.KeyboardType.NUMBER, expand=True)
         kmh_tf = ft.TextField(label="Пробег по трассе, км",
-                              value=num_str(existing["km_hw"]) if existing else "",
+                              value=num_str(existing_disp["km_hw"]) if existing_disp else "",
                               keyboard_type=ft.KeyboardType.NUMBER, expand=True)
         res_city_km = ft.Text(size=18, weight=ft.FontWeight.W_600)
         res_hw_km = ft.Text(size=18, weight=ft.FontWeight.W_600)
