@@ -1781,4 +1781,107 @@ async def main(page: ft.Page):
                     await result
                 page.update()
                 return
-            exce
+            except Exception:
+                pass
+        try:
+            drawer.open = False
+            page.update()
+        except Exception:
+            pass
+
+    def build_drawer_items():
+        car = active_car()
+
+        def go(idx):
+            async def handler(e):
+                await close_drawer()
+                switch_tab(idx)
+            return handler
+
+        async def go_garage(e):
+            await close_drawer()
+            open_garage()
+
+        async def go_car_settings(e):
+            await close_drawer()
+            open_car_dialog(active_car())
+
+        async def go_export(e):
+            await close_drawer()
+            switch_tab(2)  # вкладка «Сводка» — там кнопка «Экспорт в Excel»
+
+        items = [
+            ft.Container(
+                padding=ft.Padding.all(20),
+                content=ft.Column([
+                    ft.CircleAvatar(bgcolor=car_color(car["id"]),
+                                    content=ft.Icon(ft.Icons.LOCAL_GAS_STATION,
+                                                    color=ft.Colors.WHITE, size=20)),
+                    ft.Text(car["name"] + ((" · " + car["plate"]) if car["plate"] else ""),
+                            size=16, weight=ft.FontWeight.W_600),
+                    ft.Text("Учёт топлива", size=12, color=ft.Colors.GREY_600),
+                ], spacing=4),
+            ),
+            ft.Divider(height=1),
+        ]
+
+        nav_defs = [("Запись", ft.Icons.EDIT_NOTE, 0),
+                    ("Месяц", ft.Icons.CALENDAR_MONTH, 1),
+                    ("Сводка", ft.Icons.INSIGHTS, 2)]
+        for label, icon, idx in nav_defs:
+            selected = state["tab"] == idx
+            items.append(ft.Container(
+                padding=ft.Padding.all(4),
+                content=ft.Container(
+                    bgcolor=ft.Colors.SECONDARY_CONTAINER if selected else None,
+                    border_radius=12,
+                    content=ft.ListTile(
+                        leading=ft.Icon(icon),
+                        title=ft.Text(label, weight=ft.FontWeight.W_500 if selected else None),
+                        on_click=go(idx),
+                    ),
+                ),
+            ))
+
+        items.append(ft.Divider(height=1))
+        for label, icon, handler, sub in [
+            ("Гараж", ft.Icons.GARAGE, go_garage, "%d авто" % len(state["cars"])),
+            ("Параметры авто", ft.Icons.SETTINGS, go_car_settings, None),
+            ("Экспорт в Excel", ft.Icons.DOWNLOAD, go_export, None),
+        ]:
+            items.append(ft.Container(
+                padding=ft.Padding.all(4),
+                content=ft.ListTile(
+                    leading=ft.Icon(icon),
+                    title=ft.Text(label),
+                    subtitle=ft.Text(sub, size=11) if sub else None,
+                    on_click=handler,
+                ),
+            ))
+        return items
+
+    def render():
+        builders = (entry_view, month_view, summary_view)
+        body.controls.clear()
+        body.controls.append(builders[state["tab"]]())
+        car = active_car()
+        page.appbar.title = ft.Text(car["name"] + ((" · " + car["plate"]) if car["plate"] else ""))
+        drawer.controls = build_drawer_items()
+        page.update()
+
+    def switch_tab(idx):
+        state["tab"] = idx
+        render()
+
+    page.appbar = ft.AppBar(
+        leading=ft.IconButton(ft.Icons.MENU, tooltip="Меню", on_click=open_drawer),
+        title=ft.Text("Учёт топлива"),
+    )
+    page.drawer = drawer
+    page.add(body)
+
+    await load_all()
+    render()
+
+
+ft.run(main)
