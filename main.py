@@ -1189,39 +1189,71 @@ async def main(page: ft.Page):
     # активный пункт и актуальное название машины.
     drawer = ft.NavigationDrawer(controls=[])
 
-    # ИСПРАВЛЕНО: раньше open_drawer/close_drawer были написаны отдельно
-    # от _show_overlay/_hide_overlay и останавливались до вызова
-    # page.open()/page.close() — единственного способа показать что-либо
-    # в этой сборке Flet (в ней нет ни show_dialog, ни show_drawer как
-    # реально работающих методов; и диалоги, и меню открываются только
-    # через page.open()). Именно поэтому кнопка меню не реагировала.
-    # Теперь drawer открывается/закрывается через те же проверенные
-    # обёртки, что и диалоги.
-    def open_drawer(e=None):
-        _show_overlay("drawer", "show_drawer", drawer)
+    # ИСПРАВЛЕНО (настоящая причина): в актуальном Flet открытие и
+    # закрытие NavigationDrawer делается ТОЛЬКО через асинхронные методы
+    # страницы — await page.show_drawer() / await page.close_drawer().
+    # У NavigationDrawer, в отличие от AlertDialog, нет свойства "open",
+    # поэтому старый трюк "control.open = True; page.update()" на него
+    # не действует. Предыдущая версия вызывала show_drawer()/close_drawer()
+    # синхронно: вызов асинхронного метода без await молча создаёт
+    # корутину и тут же её отбрасывает — ни исключения, ни эффекта.
+    # Поэтому меню и не открывалось. Теперь вызываем с await, а если в
+    # какой-то сборке Flet этих методов нет — подстраховываемся старым
+    # способом на всякий случай.
+    async def open_drawer(e=None):
+        page.drawer = drawer
+        fn = getattr(page, "show_drawer", None)
+        if fn is not None:
+            try:
+                result = fn()
+                if hasattr(result, "__await__"):
+                    await result
+                page.update()
+                return
+            except Exception:
+                pass
+        try:
+            drawer.open = True
+            page.update()
+        except Exception:
+            pass
 
-    def close_drawer(e=None):
-        _hide_overlay("pop_drawer", drawer)
+    async def close_drawer(e=None):
+        fn = getattr(page, "close_drawer", None)
+        if fn is not None:
+            try:
+                result = fn()
+                if hasattr(result, "__await__"):
+                    await result
+                page.update()
+                return
+            except Exception:
+                pass
+        try:
+            drawer.open = False
+            page.update()
+        except Exception:
+            pass
 
     def build_drawer_items():
         car = active_car()
 
         def go(idx):
-            def handler(e):
-                close_drawer()
+            async def handler(e):
+                await close_drawer()
                 switch_tab(idx)
             return handler
 
-        def go_garage(e):
-            close_drawer()
+        async def go_garage(e):
+            await close_drawer()
             open_garage()
 
-        def go_car_settings(e):
-            close_drawer()
+        async def go_car_settings(e):
+            await close_drawer()
             open_car_dialog(active_car())
 
-        def go_export(e):
-            close_drawer()
+        async def go_export(e):
+            await close_drawer()
             switch_tab(2)  # вкладка «Сводка» — там кнопка «Экспорт в Excel»
 
         items = [
