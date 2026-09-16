@@ -445,45 +445,57 @@ async def main(page: ft.Page):
             setattr(page, page_prop, control)
         except Exception:
             pass
+        try:
+            control.open = True
+        except Exception:
+            pass
         fn = getattr(page, method_name, None)
         if fn is not None:
             try:
                 fn(control)
+                page.update()
                 return
             except TypeError:
                 try:
                     fn()
+                    page.update()
                     return
                 except TypeError:
                     pass
         try:
             page.open(control)
+            page.update()
             return
         except AttributeError:
             pass
         page.overlay.append(control)
-        control.open = True
         page.update()
 
     def _hide_overlay(method_name, control):
+        if control is not None:
+            try:
+                control.open = False
+            except Exception:
+                pass
         fn = getattr(page, method_name, None)
         if fn is not None:
             try:
                 fn()
+                page.update()
                 return
             except TypeError:
                 try:
                     fn(control)
+                    page.update()
                     return
                 except TypeError:
                     pass
         try:
             page.close(control)
+            page.update()
             return
         except AttributeError:
             pass
-        if control is not None:
-            control.open = False
         page.update()
 
     def open_dialog(dlg):
@@ -1174,10 +1186,50 @@ async def main(page: ft.Page):
     drawer = ft.NavigationDrawer(controls=[])
 
     def open_drawer(e=None):
-        _show_overlay("drawer", "show_drawer", drawer)
+        # У Drawer, в отличие от диалогов, похоже, мало одного вызова
+        # show_drawer() — сама по себе она может не обновлять экран. Бьём
+        # сразу по всем фронтам: назначаем page.drawer, выставляем флаг
+        # .open, зовём show_drawer() (с аргументом и без) и в любом случае
+        # обновляем страницу — если что-то из этого лишнее, оно просто
+        # молча ничего не сделает.
+        try:
+            page.drawer = drawer
+        except Exception:
+            pass
+        try:
+            drawer.open = True
+        except Exception:
+            pass
+        fn = getattr(page, "show_drawer", None)
+        if fn is not None:
+            try:
+                fn()
+            except TypeError:
+                try:
+                    fn(drawer)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        page.update()
 
     def close_drawer(e=None):
-        _hide_overlay("pop_drawer", drawer)
+        try:
+            drawer.open = False
+        except Exception:
+            pass
+        fn = getattr(page, "pop_drawer", None)
+        if fn is not None:
+            try:
+                fn()
+            except TypeError:
+                try:
+                    fn(drawer)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        page.update()
 
     def build_drawer_items():
         car = active_car()
